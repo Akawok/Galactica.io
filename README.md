@@ -34,7 +34,7 @@ Je souhaite pouvoir comparer l'évolution de mon code à travers le temps.
 
 - Pensez à modifier les fichiers de log SQL présent dans le serveur apache et node.
 
-- Les modules nodes sont fournis avec le projet ( Liste dans le package.json)
+- Les modules Nodes sont listés dans Node/package.json ( npm install à la racine Node pour installer les modules).
 
 Amusez vous bien & bonne balade !
 
