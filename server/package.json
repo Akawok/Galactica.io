@@ -1,0 +1,24 @@
+{
+  "name": "galactica-server",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsc --watch & node --watch dist/index.js",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "seed": "tsc && node dist/seed.js"
+  },
+  "dependencies": {
+    "@fastify/cors": "^9.0.1",
+    "@fastify/jwt": "^8.0.1",
+    "bcrypt": "^5.1.1",
+    "fastify": "^4.28.1",
+    "mongoose": "^8.5.0",
+    "socket.io": "^4.7.5"
+  },
+  "devDependencies": {
+    "@types/bcrypt": "^5.0.2",
+    "@types/node": "^20.14.0",
+    "typescript": "^5.4.5"
+  }
+}
