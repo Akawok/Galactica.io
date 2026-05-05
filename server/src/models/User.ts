@@ -35,9 +35,9 @@ const UserSchema = new Schema<IUser>({
   xp: { type: Number, default: 0 },
   level: { type: Number, default: 1 },
   inventory: [{ type: Schema.Types.ObjectId, ref: "Item" }],
-  activeShip: { type: String, default: "ship1" },
+  activeShip: { type: String, default: "spaceship-01" },
   activeBullet: { type: String, default: "bullet1" },
-  activeBulletSecondary: { type: String, default: "bullet3" },
+  activeBulletSecondary: { type: String, default: "bullet1" },
   stats: {
     wins: { type: Number, default: 0 },
     losses: { type: Number, default: 0 },
@@ -59,7 +59,7 @@ export function serializeUser(user: IUser) {
     level: user.level ?? 1,
     activeShip: user.activeShip,
     activeBullet: user.activeBullet,
-    activeBulletSecondary: user.activeBulletSecondary ?? "bullet3",
+    activeBulletSecondary: user.activeBulletSecondary ?? "bullet1",
   };
 }
 

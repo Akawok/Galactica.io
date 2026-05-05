@@ -27,7 +27,7 @@ export const LOBBY_EVENT = {
 } as const;
 
 export const DEFAULT_LOADOUT = {
-	ship: 'ship1',
+	ship: 'spaceship-01',
 	bulletPrimary: 'bullet1',
-	bulletSecondary: 'bullet3'
+	bulletSecondary: 'bullet1'
 } as const;

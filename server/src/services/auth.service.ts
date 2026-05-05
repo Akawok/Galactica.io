@@ -1,5 +1,6 @@
 import bcrypt from "bcrypt";
 import { User } from "../models/User.js";
+import { Item } from "../models/Item.js";
 
 const SALT_ROUNDS = 12;
 
@@ -15,7 +16,13 @@ export async function registerUser(
   }
 
   const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
-  const user = await User.create({ username, email, passwordHash });
+  const freeItems = await Item.find({ price: 0 }).select("_id").lean();
+  const user = await User.create({
+    username,
+    email,
+    passwordHash,
+    inventory: freeItems.map((i) => i._id),
+  });
   return user;
 }
 

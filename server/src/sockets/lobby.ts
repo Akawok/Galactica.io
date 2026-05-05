@@ -153,9 +153,9 @@ export function registerLobbySocket(io: Server, socket: Socket) {
         userId: data.userId,
         username: data.username,
         status: "idle",
-        activeShip: data.activeShip ?? "ship1",
+        activeShip: data.activeShip ?? "spaceship-01",
         activeBullet: data.activeBullet ?? "bullet1",
-        activeBulletSecondary: data.activeBulletSecondary ?? "bullet3",
+        activeBulletSecondary: data.activeBulletSecondary ?? "bullet1",
       });
       broadcastLobbyState(io);
     },
@@ -270,6 +270,22 @@ export function registerLobbySocket(io: Server, socket: Socket) {
     }
     broadcastLobbyState(io);
   });
+
+  socket.on(
+    "user:updateLoadout",
+    (data: {
+      activeShip?: string;
+      activeBullet?: string;
+      activeBulletSecondary?: string;
+    }) => {
+      const player = connectedPlayers.get(socket.id);
+      if (!player) return;
+      if (data.activeShip) player.activeShip = data.activeShip;
+      if (data.activeBullet) player.activeBullet = data.activeBullet;
+      if (data.activeBulletSecondary)
+        player.activeBulletSecondary = data.activeBulletSecondary;
+    },
+  );
 
   socket.on("chat:message", async (data: { message: string }) => {
     const player = connectedPlayers.get(socket.id);

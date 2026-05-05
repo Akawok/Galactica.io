@@ -81,7 +81,7 @@ export function createPlayerState(
   playerIndex: number,
   sprite: string,
   bulletSprite: string,
-  bulletSpriteSecondary: string = "bullet3",
+  bulletSpriteSecondary: string = "bullet1",
 ): PlayerState {
   const { x, y } = getSpawnPosition(playerIndex);
   return {

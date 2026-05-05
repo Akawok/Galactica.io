@@ -1,4 +1,6 @@
 <script lang="ts">
+	const ANIMATED_SPRITES = ['spaceship-01', 'spaceship-02', 'spaceship-03', 'spaceship-04', 'spaceship-05', 'spaceship-06'];
+
 	interface Item {
 		_id: string;
 		name: string;
@@ -18,18 +20,24 @@
 		onleave: () => void;
 	}
 	let { item, active, loading, onequip, onhover, onleave }: Props = $props();
+
+	function spriteSrc(sprite: string) {
+		return ANIMATED_SPRITES.includes(sprite)
+			? `/assets/${sprite}-f1.png`
+			: `/assets/${sprite}.png`;
+	}
 </script>
 
 <button
 	class="loadout-card"
 	class:active
-	onclick={() => !active && onequip()}
+	onclick={() => onequip()}
 	disabled={loading}
 	onmouseenter={onhover}
 	onmouseleave={onleave}
 >
 	<img
-		src={`/assets/${item.sprite}.png`}
+		src={spriteSrc(item.sprite)}
 		alt={item.name}
 		onerror={(e: any) => (e.target.style.display = 'none')}
 	/>

@@ -4,7 +4,7 @@
 	import { page } from '$app/stores';
 	import { currentUser, auth } from '$lib/stores/auth';
 	import { getSocket } from '$lib/stores/socket';
-	import { GameEngine } from '$lib/game/engine';
+	import type { GameEngine } from '$lib/game/engine';
 	import { api } from '$lib/api';
 
 	type GameStatus = 'waiting' | 'playing' | 'roundEnd' | 'matchEnd';
@@ -41,6 +41,7 @@
 		const spectatorFlag = sessionStorage.getItem(`spectator_${roomId}`);
 		isSpectator = !!spectatorFlag;
 
+		const { GameEngine } = await import('$lib/game/engine');
 		engine = new GameEngine(socket, socket.id!, isSpectator);
 		await engine.init(canvas);
 

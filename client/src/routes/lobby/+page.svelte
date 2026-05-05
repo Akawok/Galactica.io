@@ -83,6 +83,12 @@
 			return (b.level ?? 1) - (a.level ?? 1);
 		})
 	);
+	const ANIMATED_SPRITES = ['spaceship-01', 'spaceship-02', 'spaceship-03', 'spaceship-04', 'spaceship-05', 'spaceship-06'];
+	function shipPreviewSrc(sprite: string | undefined): string {
+		const s = sprite ?? 'spaceship-01';
+		return ANIMATED_SPRITES.includes(s) ? `/assets/${s}-f1.png` : `/assets/${s}.png`;
+	}
+
 	function lbMedal(i: number) {
 		return i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}`;
 	}
@@ -114,7 +120,7 @@
 	}
 	const kd = $derived(computeKD(fullStats));
 
-	const shopNotOwned = $derived(allItems.filter((i) => !ownedIds.has(i._id)));
+	const shopNotOwned = $derived(allItems.filter((i) => !ownedIds.has(String(i._id))));
 	const shopFiltered = $derived(filterByTab(shopNotOwned as any, shopTab) as InventoryItem[]);
 
 	async function buyItem(item: InventoryItem) {
@@ -123,7 +129,7 @@
 		try {
 			const { points } = await api.shop.buy(item._id);
 			auth.updateUser({ points });
-			ownedIds = new Set([...ownedIds, item._id]);
+			ownedIds = new Set([...ownedIds, String(item._id)]);
 			inventory = [...inventory, item];
 		} finally {
 			buyLoading = null;
@@ -156,7 +162,7 @@
 			const statsUser = statsResult.value.user;
 			fullStats = statsUser.stats;
 			inventory = statsUser.inventory ?? [];
-			ownedIds = new Set(inventory.map((i) => i._id));
+			ownedIds = new Set(inventory.map((i) => String(i._id)));
 			auth.updateUser({
 				xp: statsUser.xp ?? 0,
 				level: statsUser.level ?? 1,
@@ -249,14 +255,17 @@
 		try {
 			const type = item.type as 'ship' | 'bullet';
 			const role = item.bulletRole as 'primary' | 'secondary' | undefined;
-			await api.shop.equip(type, item.sprite, role ?? undefined);
-			if (item.type === 'ship') {
-				auth.updateUser({ activeShip: item.sprite });
-			} else if (item.bulletRole === 'primary') {
-				auth.updateUser({ activeBullet: item.sprite });
-			} else if (item.bulletRole === 'secondary') {
-				auth.updateUser({ activeBulletSecondary: item.sprite });
-			}
+			const result = await api.shop.equip(type, item.sprite, role ?? undefined);
+			auth.updateUser({
+				activeShip: result.activeShip,
+				activeBullet: result.activeBullet,
+				activeBulletSecondary: result.activeBulletSecondary
+			});
+			socket?.emit('user:updateLoadout', {
+				activeShip: result.activeShip,
+				activeBullet: result.activeBullet,
+				activeBulletSecondary: result.activeBulletSecondary
+			});
 		} finally {
 			equipLoading = null;
 		}
@@ -429,7 +438,7 @@
 						>
 							<div class="shop-card-img">
 								<img
-									src={`/assets/${item.sprite}.png`}
+									src={shipPreviewSrc(item.sprite)}
 									alt={item.name}
 									onerror={(e: any) => (e.target.style.display = 'none')}
 								/>
@@ -488,7 +497,7 @@
 		<div class="hero-ship">
 			<div class="ship-display">
 				<img
-					src={`/assets/${$currentUser?.activeShip ?? 'ship1'}.png`}
+					src={shipPreviewSrc($currentUser?.activeShip)}
 					alt="vaisseau"
 					class="ship-img"
 					onerror={(e: any) => (e.target.style.display = 'none')}

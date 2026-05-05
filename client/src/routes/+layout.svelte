@@ -1,15 +1,28 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
-	import { isAuthenticated, auth, currentUser } from '$lib/stores/auth';
+	import { isAuthenticated, auth, currentUser, token } from '$lib/stores/auth';
 	import { connectSocket, disconnectSocket } from '$lib/stores/socket';
 	import { addMessage } from '$lib/stores/chat';
 	import Rocket from '@lucide/svelte/icons/rocket';
 	import { getGrade } from '$lib/grades';
+	import { onMount } from 'svelte';
+	import { api } from '$lib/api';
 
 	let { children } = $props();
 
 	const PUBLIC_ROUTES = ['/login', '/register'];
+
+	// Re-fetch le profil depuis la DB au chargement pour écraser le cache localStorage
+	onMount(async () => {
+		if (!$token) return;
+		try {
+			const { user } = await api.auth.me();
+			auth.updateUser(user);
+		} catch {
+			// token expiré ou invalide → laisser le $effect gérer la redirection
+		}
+	});
 
 	$effect(() => {
 		if (!$isAuthenticated && !PUBLIC_ROUTES.includes($page.url.pathname)) {

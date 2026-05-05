@@ -28,7 +28,7 @@ export async function shopRoutes(app: FastifyInstance) {
         inventory: user.inventory,
         activeShip: user.activeShip,
         activeBullet: user.activeBullet,
-        activeBulletSecondary: user.activeBulletSecondary ?? "bullet3",
+        activeBulletSecondary: user.activeBulletSecondary ?? "bullet1",
         points: user.points,
       });
     },
@@ -115,7 +115,7 @@ export async function shopRoutes(app: FastifyInstance) {
       return reply.send({
         activeShip: user.activeShip,
         activeBullet: user.activeBullet,
-        activeBulletSecondary: user.activeBulletSecondary ?? "bullet3",
+        activeBulletSecondary: user.activeBulletSecondary ?? "bullet1",
       });
     },
   );

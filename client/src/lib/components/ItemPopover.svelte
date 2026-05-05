@@ -26,6 +26,13 @@
 	};
 	const statLabel = (key: string) => STAT_LABELS[key] ?? key;
 
+	const ANIMATED_SPRITES = ['spaceship-01', 'spaceship-02', 'spaceship-03', 'spaceship-04', 'spaceship-05', 'spaceship-06'];
+	function spriteSrc(sprite: string) {
+		return ANIMATED_SPRITES.includes(sprite)
+			? `/assets/${sprite}-f1.png`
+			: `/assets/${sprite}.png`;
+	}
+
 	const active = $derived(
 		item.type === 'ship'
 			? activeShip === item.sprite
@@ -38,7 +45,7 @@
 <div class="item-popover" style="left:{x}px; top:{y}px;">
 	<div class="popover-img">
 		<img
-			src={`/assets/${item.sprite}.png`}
+			src={spriteSrc(item.sprite)}
 			alt={item.name}
 			onerror={(e: any) => (e.target.style.display = 'none')}
 		/>

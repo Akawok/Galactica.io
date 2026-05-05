@@ -1,6 +1,7 @@
 import {
 	Application,
 	Sprite,
+	AnimatedSprite,
 	Texture,
 	Graphics,
 	Container,
@@ -11,6 +12,17 @@ import {
 import { Starfield } from './starfield';
 import { applyMovement, type PredictedInput, type PredictedPlayer } from './physics';
 import type { Socket } from 'socket.io-client';
+
+interface ThrusterParticle {
+	gfx: Graphics;
+	x: number;
+	y: number;
+	vx: number;
+	vy: number;
+	life: number;
+	maxLife: number;
+	size: number;
+}
 
 interface PlayerState {
 	id: string;
@@ -49,7 +61,7 @@ interface GameStartPayload {
 
 interface PlayerVisual {
 	container: Container;
-	sprite: Sprite;
+	sprite: Sprite | AnimatedSprite;
 	hpBar: Graphics;
 	hpBg: Graphics;
 	energyBar: Graphics;
@@ -59,17 +71,34 @@ interface PlayerVisual {
 	targetX: number;
 	targetY: number;
 	targetAngle: number;
+	isMoving: boolean;
+}
+
+// Sprites qui ont des frames d'animation : "spaceship-01" → ["spaceship-01-f1.png", ..., "spaceship-01-f4.png"]
+const ANIMATED_SPRITES: Record<string, string[]> = {
+	'spaceship-01': ['spaceship-01-f1', 'spaceship-01-f2', 'spaceship-01-f3', 'spaceship-01-f4'],
+	'spaceship-02': ['spaceship-02-f1', 'spaceship-02-f2', 'spaceship-02-f3', 'spaceship-02-f4'],
+	'spaceship-03': ['spaceship-03-f1', 'spaceship-03-f2', 'spaceship-03-f3', 'spaceship-03-f4'],
+	'spaceship-04': ['spaceship-04-f1', 'spaceship-04-f2', 'spaceship-04-f3', 'spaceship-04-f4'],
+	'spaceship-05': ['spaceship-05-f1', 'spaceship-05-f2', 'spaceship-05-f3', 'spaceship-05-f4'],
+	'spaceship-06': ['spaceship-06-f1', 'spaceship-06-f2', 'spaceship-06-f3', 'spaceship-06-f4'],
+};
+
+function isAnimated(spriteName: string): spriteName is keyof typeof ANIMATED_SPRITES {
+	return spriteName in ANIMATED_SPRITES;
 }
 
 export class GameEngine {
 	private app: Application;
 	private starfield!: Starfield;
-	private canvas!: HTMLCanvasElement;
 	private playerVisuals = new Map<string, PlayerVisual>();
 	private bulletVisuals = new Map<string, { visual: Sprite | Graphics; targetX: number; targetY: number }>();
 	private socket: Socket;
 	private myId: string;
 	private isSpectator: boolean;
+
+	private thrusterParticles: ThrusterParticle[] = [];
+	private thrusterContainer!: Container;
 
 	private keys = new Set<string>();
 	private mouseAngle = 0;
@@ -114,6 +143,10 @@ export class GameEngine {
 		});
 
 		this.starfield = new Starfield(this.app, this.mapWidth, this.mapHeight);
+
+		this.thrusterContainer = new Container();
+		this.app.stage.addChild(this.thrusterContainer);
+
 		this.setupHUD();
 
 		if (!this.isSpectator) {
@@ -124,6 +157,7 @@ export class GameEngine {
 			this.starfield.update();
 			this.interpolatePlayers();
 			this.interpolateBullets();
+			this.updateThrusterParticles();
 		});
 
 		if (!this.isSpectator) {
@@ -146,7 +180,6 @@ export class GameEngine {
 	}
 
 	private setupInputs(canvas: HTMLCanvasElement) {
-		this.canvas = canvas;
 		window.addEventListener('keydown', this.onKeyDown);
 		window.addEventListener('keyup', this.onKeyUp);
 
@@ -205,10 +238,15 @@ export class GameEngine {
 		this.mapWidth = payload.config.mapWidth;
 		this.mapHeight = payload.config.mapHeight;
 
-		// Collecte tous les sprites à précharger (vaisseaux + bullets)
 		const spritesToLoad = new Set<string>();
 		for (const p of payload.players) {
-			spritesToLoad.add(`/assets/${p.sprite}.png`);
+			if (isAnimated(p.sprite)) {
+				for (const frame of ANIMATED_SPRITES[p.sprite]) {
+					spritesToLoad.add(`/assets/${frame}.png`);
+				}
+			} else {
+				spritesToLoad.add(`/assets/${p.sprite}.png`);
+			}
 			spritesToLoad.add(`/assets/${p.bulletSprite}.png`);
 			spritesToLoad.add(`/assets/${p.bulletSpriteSecondary}.png`);
 		}
@@ -220,15 +258,39 @@ export class GameEngine {
 		}
 	}
 
+	private createShipSprite(spriteName: string, playerId: string): Sprite | AnimatedSprite {
+		// Les sprites sont dessinés nez vers le haut — on les pré-rotate de -90° pour que
+		// le nez pointe vers la droite (angle 0 dans le repère du moteur).
+		if (isAnimated(spriteName)) {
+			const frames = ANIMATED_SPRITES[spriteName].map((f) => {
+				const tex = Assets.get(`/assets/${f}.png`);
+				return tex ?? Texture.WHITE;
+			});
+			const anim = new AnimatedSprite(frames);
+			anim.anchor.set(0.5);
+			anim.width = 64;
+			anim.height = 64;
+			anim.rotation = Math.PI / 2;
+			anim.animationSpeed = 0.15;
+			anim.loop = true;
+			anim.gotoAndStop(0);
+			return anim;
+		}
+
+		const texture = Assets.get(`/assets/${spriteName}.png`);
+		const spr = new Sprite(texture ?? Texture.WHITE);
+		spr.anchor.set(0.5);
+		spr.width = 64;
+		spr.height = 64;
+		spr.rotation = Math.PI / 2;
+		if (!texture) spr.tint = playerId === this.myId ? 0x00aaff : 0xff4444;
+		return spr;
+	}
+
 	private createPlayerVisual(p: PlayerState & { username: string; sprite: string }) {
 		const container = new Container();
 
-		const texture = Assets.get(`/assets/${p.sprite}.png`);
-		const shipSprite = new Sprite(texture ?? Texture.WHITE);
-		shipSprite.anchor.set(0.5);
-		shipSprite.width = 64;
-		shipSprite.height = 64;
-		if (!texture) shipSprite.tint = p.id === this.myId ? 0x00aaff : 0xff4444;
+		const shipSprite = this.createShipSprite(p.sprite, p.id);
 
 		const hpBg = new Graphics().rect(-24, 30, 48, 5).fill({ color: 0x333333 });
 		const hpBar = new Graphics().rect(-24, 30, 48, 5).fill({ color: 0x44ff44 });
@@ -259,7 +321,8 @@ export class GameEngine {
 			state: { ...p },
 			targetX: p.x,
 			targetY: p.y,
-			targetAngle: p.angle
+			targetAngle: p.angle,
+			isMoving: false
 		});
 
 		if (p.id === this.myId) {
@@ -267,6 +330,15 @@ export class GameEngine {
 			this.predicted.y = p.y;
 			this.predicted.angle = p.angle;
 			this.hasPredictedState = true;
+		}
+	}
+
+	private setShipMoving(v: PlayerVisual, moving: boolean) {
+		if (!(v.sprite instanceof AnimatedSprite)) return;
+		if (moving && !v.sprite.playing) {
+			v.sprite.play();
+		} else if (!moving && v.sprite.playing) {
+			v.sprite.gotoAndStop(0);
 		}
 	}
 
@@ -291,9 +363,15 @@ export class GameEngine {
 					applyMovement(this.predicted, pending.input);
 				}
 			} else {
+				const prevX = visual.container.x;
+				const prevY = visual.container.y;
 				if (p.x !== undefined) visual.targetX = p.x;
 				if (p.y !== undefined) visual.targetY = p.y;
 				if (p.angle !== undefined) visual.targetAngle = p.angle;
+				visual.isMoving =
+					Math.abs((p.x ?? prevX) - prevX) > 0.5 ||
+					Math.abs((p.y ?? prevY) - prevY) > 0.5;
+				this.setShipMoving(visual, visual.isMoving);
 			}
 
 			// HP / énergie : invariant — jamais prédits côté client (le serveur est seule source de vérité,
@@ -371,7 +449,9 @@ export class GameEngine {
 				visual.targetX = p.x;
 				visual.targetY = p.y;
 				visual.targetAngle = p.angle;
-				visual.sprite.rotation = p.angle;
+				visual.sprite.rotation = p.angle + Math.PI / 2;
+				visual.isMoving = false;
+				this.setShipMoving(visual, false);
 				this.updateBars(visual);
 
 				if (p.id === this.myId) {
@@ -391,19 +471,103 @@ export class GameEngine {
 		}
 	}
 
+	private spawnThrusterParticles(x: number, y: number, angle: number) {
+		const backAngle = angle + Math.PI;
+		const spawnDist = 22;
+		const baseX = x + Math.cos(backAngle) * spawnDist;
+		const baseY = y + Math.sin(backAngle) * spawnDist;
+
+		for (let i = 0; i < 3; i++) {
+			const spread = (Math.random() - 0.5) * 0.6;
+			const speed = 1.5 + Math.random() * 2;
+			const particleAngle = backAngle + spread;
+			const gfx = new Graphics();
+			this.thrusterContainer.addChild(gfx);
+
+			const particle: ThrusterParticle = {
+				gfx,
+				x: baseX + (Math.random() - 0.5) * 6,
+				y: baseY + (Math.random() - 0.5) * 6,
+				vx: Math.cos(particleAngle) * speed,
+				vy: Math.sin(particleAngle) * speed,
+				life: 0,
+				maxLife: 12 + Math.random() * 8,
+				size: 2.5 + Math.random() * 2.5
+			};
+			this.thrusterParticles.push(particle);
+		}
+	}
+
+	private updateThrusterParticles() {
+		for (const [id, v] of this.playerVisuals) {
+			let moving = false;
+			let angle = 0;
+			let px = 0;
+			let py = 0;
+
+			if (id === this.myId && this.hasPredictedState) {
+				const k = this.keys;
+				moving = k.has('z') || k.has('w') || k.has('s') || k.has('q') || k.has('a') || k.has('d');
+				angle = this.predicted.angle;
+				px = this.predicted.x;
+				py = this.predicted.y;
+
+				// Sync animation pour le joueur local
+				this.setShipMoving(v, moving);
+			} else {
+				moving = v.isMoving;
+				angle = v.targetAngle;
+				px = v.container.x;
+				py = v.container.y;
+			}
+
+			// Pas de particules pour les sprites animés (ils ont déjà la flamme intégrée)
+			if (!isAnimated(v.state.sprite) && moving) {
+				this.spawnThrusterParticles(px, py, angle);
+			}
+		}
+
+		for (let i = this.thrusterParticles.length - 1; i >= 0; i--) {
+			const p = this.thrusterParticles[i];
+			p.life++;
+			p.x += p.vx;
+			p.y += p.vy;
+			p.vx *= 0.92;
+			p.vy *= 0.92;
+
+			const t = p.life / p.maxLife;
+			const alpha = (1 - t) * 0.85;
+			const size = p.size * (1 - t * 0.5);
+
+			let color: number;
+			if (t < 0.25) color = 0xffffff;
+			else if (t < 0.55) color = 0xff9933;
+			else color = 0xff3300;
+
+			p.gfx.clear().circle(p.x, p.y, size).fill({ color, alpha });
+
+			if (p.life >= p.maxLife) {
+				p.gfx.destroy();
+				this.thrusterParticles.splice(i, 1);
+			}
+		}
+	}
+
 	private interpolatePlayers() {
 		const lerp = 0.2;
 		for (const [id, v] of this.playerVisuals) {
 			if (id === this.myId && this.hasPredictedState) {
 				v.container.x = this.predicted.x;
 				v.container.y = this.predicted.y;
-				v.sprite.rotation = this.predicted.angle;
+				v.sprite.rotation = this.predicted.angle + Math.PI / 2;
 				continue;
 			}
 			v.container.x += (v.targetX - v.container.x) * lerp;
 			v.container.y += (v.targetY - v.container.y) * lerp;
 
-			let da = v.targetAngle - v.sprite.rotation;
+			// Interpoler l'angle logique (sans le -π/2 de base)
+			const targetRotation = v.targetAngle + Math.PI / 2;
+			let da = targetRotation - v.sprite.rotation;
 			while (da > Math.PI) da -= Math.PI * 2;
 			while (da < -Math.PI) da += Math.PI * 2;
 			v.sprite.rotation += da * lerp;
