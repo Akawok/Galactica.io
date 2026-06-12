@@ -53,10 +53,12 @@ export class Starfield {
 		app.stage.addChildAt(this.container, 0);
 	}
 
-	update() {
+	// dt en frames équivalentes 60 fps — garde une vitesse de défilement
+	// identique quel que soit le taux de rafraîchissement de l'écran.
+	update(dt: number = 1) {
 		for (const layer of this.layers) {
 			for (const star of layer) {
-				star.y += star.speed;
+				star.y += star.speed * dt;
 				if (star.y > this.height + 5) {
 					star.y = -5;
 					star.x = Math.random() * this.width;

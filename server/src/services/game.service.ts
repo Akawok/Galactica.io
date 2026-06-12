@@ -144,11 +144,8 @@ export function applyInput(
     );
   }
 
-  // Régénération énergie
-  player.energy = Math.min(
-    GAME_CONFIG.MAX_ENERGY,
-    player.energy + GAME_CONFIG.ENERGY_REGEN,
-  );
+  // NB : la régénération d'énergie est appliquée par tick serveur (voir makeTick),
+  // pas ici — sinon un client qui spamme des inputs régénérerait plus vite.
 
   const muzzleOffset = GAME_CONFIG.SHIP_RADIUS + GAME_CONFIG.BULLET_RADIUS + 1;
   const cos = Math.cos(player.angle);

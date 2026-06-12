@@ -1,8 +1,13 @@
 import type { Server, Socket } from "socket.io";
 import type { RoomState } from "../services/game.service.js";
 import { GAME_CONFIG } from "../services/game.service.js";
-import { registerGameSocket, cleanupRoomInputs } from "./game.js";
+import {
+  registerGameSocket,
+  cleanupRoomInputs,
+  sendGameSnapshot,
+} from "./game.js";
 import { ChatMessage } from "../models/ChatMessage.js";
+import { User } from "../models/User.js";
 import { recordMatchResult, saveGameRecord } from "../services/match.service.js";
 
 interface ConnectedPlayer {
@@ -125,7 +130,7 @@ async function handlePlayerLeave(io: Server, socketId: string, roomId: string) {
       io.to(roomId).emit("game:abandoned", { username: opponent.username });
     }
 
-    cleanupRoomInputs(room);
+    cleanupRoomInputs(io, room);
     if (player) player.status = "idle";
     rooms.delete(roomId);
     return;
@@ -138,28 +143,31 @@ async function handlePlayerLeave(io: Server, socketId: string, roomId: string) {
 }
 
 export function registerLobbySocket(io: Server, socket: Socket) {
-  // Authentification du joueur à la connexion socket
-  socket.on(
-    "user:join",
-    (data: {
-      userId: string;
-      username: string;
-      activeShip: string;
-      activeBullet: string;
-      activeBulletSecondary: string;
-    }) => {
+  // Enregistrement du joueur dans le lobby. L'identité vient du JWT vérifié au
+  // handshake (socket.data) et le loadout de la DB — on n'accepte RIEN du client
+  // ici, sinon n'importe qui pourrait usurper un compte ou équiper des items non possédés.
+  socket.on("user:join", async () => {
+    const userId = socket.data.userId as string | undefined;
+    if (!userId) return;
+    try {
+      const user = await User.findById(userId)
+        .select("username activeShip activeBullet activeBulletSecondary")
+        .lean();
+      if (!user) return;
       connectedPlayers.set(socket.id, {
         socketId: socket.id,
-        userId: data.userId,
-        username: data.username,
+        userId,
+        username: user.username,
         status: "idle",
-        activeShip: data.activeShip ?? "spaceship-01",
-        activeBullet: data.activeBullet ?? "bullet1",
-        activeBulletSecondary: data.activeBulletSecondary ?? "bullet1",
+        activeShip: user.activeShip ?? "spaceship-01",
+        activeBullet: user.activeBullet ?? "bullet1",
+        activeBulletSecondary: user.activeBulletSecondary ?? "bullet1",
       });
       broadcastLobbyState(io);
-    },
-  );
+    } catch (err) {
+      console.error("[user:join] erreur:", err);
+    }
+  });
 
   // Créer une nouvelle room
   socket.on("game:create", () => {
@@ -190,7 +198,8 @@ export function registerLobbySocket(io: Server, socket: Socket) {
   });
 
   // Annuler une room en attente
-  socket.on("game:cancel", (data: { roomId: string }) => {
+  socket.on("game:cancel", (data: { roomId?: string }) => {
+    if (typeof data?.roomId !== "string") return;
     const player = connectedPlayers.get(socket.id);
     const room = rooms.get(data.roomId);
     if (!room || room.status !== "waiting") return;
@@ -204,7 +213,8 @@ export function registerLobbySocket(io: Server, socket: Socket) {
   });
 
   // Rejoindre une room existante
-  socket.on("game:join", (data: { roomId: string }) => {
+  socket.on("game:join", (data: { roomId?: string }) => {
+    if (typeof data?.roomId !== "string") return;
     const player = connectedPlayers.get(socket.id);
     const room = rooms.get(data.roomId);
     if (!player || !room || player.status !== "idle") return;
@@ -241,7 +251,8 @@ export function registerLobbySocket(io: Server, socket: Socket) {
   });
 
   // Rejoindre en spectateur
-  socket.on("game:spectate", (data: { roomId: string }) => {
+  socket.on("game:spectate", (data: { roomId?: string }) => {
+    if (typeof data?.roomId !== "string") return;
     const player = connectedPlayers.get(socket.id);
     const room = rooms.get(data.roomId);
     if (!player || !room || room.status === "matchEnd") return;
@@ -255,9 +266,23 @@ export function registerLobbySocket(io: Server, socket: Socket) {
     broadcastLobbyState(io);
   });
 
+  // Le spectateur a monté la page de jeu : s'il arrive en cours de match,
+  // on lui envoie un snapshot complet (sinon il resterait sur un écran vide
+  // car game:start n'est diffusé qu'au lancement de la partie).
+  socket.on("game:spectateReady", (data: { roomId?: string }) => {
+    if (typeof data?.roomId !== "string") return;
+    const room = rooms.get(data.roomId);
+    if (!room || !room.spectators.has(socket.id)) return;
+    if (room.status !== "playing" && room.status !== "roundEnd") return;
+    sendGameSnapshot(socket, room);
+  });
+
   // Abandon volontaire d'une partie en cours (navigation hors de la page game)
-  socket.on("game:leave", (data: { roomId: string }) => {
-    handlePlayerLeave(io, socket.id, data.roomId);
+  socket.on("game:leave", (data: { roomId?: string }) => {
+    if (typeof data?.roomId !== "string") return;
+    handlePlayerLeave(io, socket.id, data.roomId).catch((err) =>
+      console.error("[game:leave] erreur:", err),
+    );
   });
 
   // Déconnexion
@@ -265,31 +290,37 @@ export function registerLobbySocket(io: Server, socket: Socket) {
     const player = connectedPlayers.get(socket.id);
     if (player) {
       if (player.currentRoomId)
-        handlePlayerLeave(io, socket.id, player.currentRoomId);
+        handlePlayerLeave(io, socket.id, player.currentRoomId).catch((err) =>
+          console.error("[disconnect] erreur:", err),
+        );
       connectedPlayers.delete(socket.id);
     }
     broadcastLobbyState(io);
   });
 
-  socket.on(
-    "user:updateLoadout",
-    (data: {
-      activeShip?: string;
-      activeBullet?: string;
-      activeBulletSecondary?: string;
-    }) => {
-      const player = connectedPlayers.get(socket.id);
-      if (!player) return;
-      if (data.activeShip) player.activeShip = data.activeShip;
-      if (data.activeBullet) player.activeBullet = data.activeBullet;
-      if (data.activeBulletSecondary)
-        player.activeBulletSecondary = data.activeBulletSecondary;
-    },
-  );
-
-  socket.on("chat:message", async (data: { message: string }) => {
+  // Le loadout actif est relu depuis la DB (mis à jour par /shop/equip qui, lui,
+  // vérifie la possession) — on ne fait pas confiance au payload du client.
+  socket.on("user:updateLoadout", async () => {
     const player = connectedPlayers.get(socket.id);
-    if (!player || !data.message?.trim()) return;
+    if (!player) return;
+    try {
+      const user = await User.findById(player.userId)
+        .select("activeShip activeBullet activeBulletSecondary")
+        .lean();
+      if (!user) return;
+      player.activeShip = user.activeShip ?? player.activeShip;
+      player.activeBullet = user.activeBullet ?? player.activeBullet;
+      player.activeBulletSecondary =
+        user.activeBulletSecondary ?? player.activeBulletSecondary;
+    } catch (err) {
+      console.error("[user:updateLoadout] erreur:", err);
+    }
+  });
+
+  socket.on("chat:message", async (data: { message?: string }) => {
+    const player = connectedPlayers.get(socket.id);
+    if (!player || typeof data?.message !== "string" || !data.message.trim())
+      return;
 
     const now = Date.now();
     if (player.lastChatAt && now - player.lastChatAt < CHAT_MIN_INTERVAL_MS) return;

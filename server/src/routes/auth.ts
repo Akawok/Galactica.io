@@ -1,6 +1,31 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { registerUser, loginUser } from "../services/auth.service.js";
 import { User, serializeUser } from "../models/User.js";
+
+// Rate-limit en mémoire contre le brute-force sur login/register : 10 tentatives/min par IP.
+const AUTH_MAX_ATTEMPTS = 10;
+const AUTH_WINDOW_MS = 60_000;
+const authAttempts = new Map<string, { count: number; resetAt: number }>();
+
+async function authRateLimit(req: FastifyRequest, reply: FastifyReply) {
+  const now = Date.now();
+  if (authAttempts.size > 10_000) {
+    for (const [ip, entry] of authAttempts) {
+      if (entry.resetAt <= now) authAttempts.delete(ip);
+    }
+  }
+  const entry = authAttempts.get(req.ip);
+  if (!entry || entry.resetAt <= now) {
+    authAttempts.set(req.ip, { count: 1, resetAt: now + AUTH_WINDOW_MS });
+    return;
+  }
+  entry.count++;
+  if (entry.count > AUTH_MAX_ATTEMPTS) {
+    return reply
+      .code(429)
+      .send({ error: "Trop de tentatives, réessaie dans une minute" });
+  }
+}
 
 export async function authRoutes(app: FastifyInstance) {
   app.post<{
@@ -8,6 +33,7 @@ export async function authRoutes(app: FastifyInstance) {
   }>(
     "/auth/register",
     {
+      preHandler: authRateLimit,
       schema: {
         body: {
           type: "object",
@@ -40,6 +66,7 @@ export async function authRoutes(app: FastifyInstance) {
   }>(
     "/auth/login",
     {
+      preHandler: authRateLimit,
       schema: {
         body: {
           type: "object",

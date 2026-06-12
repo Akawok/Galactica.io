@@ -28,6 +28,16 @@ export const config = {
   clientUrl: process.env.CLIENT_URL ?? "http://localhost:5173",
 };
 
+if (!process.env.JWT_SECRET) {
+  if (process.env.NODE_ENV === "production") {
+    console.error("❌ JWT_SECRET est obligatoire en production");
+    process.exit(1);
+  }
+  console.warn(
+    "⚠️  JWT_SECRET non défini — secret par défaut utilisé (dev uniquement, NE PAS déployer ainsi)",
+  );
+}
+
 export async function connectDB() {
   try {
     await mongoose.connect(config.mongoUri);

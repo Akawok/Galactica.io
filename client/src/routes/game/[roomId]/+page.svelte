@@ -45,6 +45,12 @@
 		engine = new GameEngine(socket, socket.id!, isSpectator);
 		await engine.init(canvas);
 
+		// Spectateur arrivé en cours de match : demande un snapshot complet au serveur
+		// (game:start n'est diffusé qu'au lancement de la partie).
+		if (isSpectator) {
+			socket.emit('game:spectateReady', { roomId });
+		}
+
 		socket.on('game:start', async (payload: any) => {
 			status = 'playing';
 			await engine?.onGameStart(payload);

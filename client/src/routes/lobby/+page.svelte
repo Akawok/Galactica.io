@@ -7,7 +7,7 @@
 	import { api } from '$lib/api';
 	import { xpForLevel, xpPercent } from '$lib/xp';
 	import { filterByTab } from '$lib/itemFilter';
-	import { GAME_EVENT, LOBBY_EVENT, DEFAULT_LOADOUT } from '$lib/shared/events';
+	import { GAME_EVENT, LOBBY_EVENT } from '$lib/shared/events';
 	import LoadoutRow from '$lib/components/LoadoutRow.svelte';
 	import ItemPopover from '$lib/components/ItemPopover.svelte';
 	import Backpack from '@lucide/svelte/icons/backpack';
@@ -187,13 +187,9 @@
 				});
 		}
 
-		socket.emit(LOBBY_EVENT.USER_JOIN, {
-			userId: u.id,
-			username: u.username,
-			activeShip: u.activeShip,
-			activeBullet: u.activeBullet,
-			activeBulletSecondary: u.activeBulletSecondary ?? DEFAULT_LOADOUT.bulletSecondary
-		});
+		// L'identité et le loadout sont résolus côté serveur à partir du JWT
+		// du handshake — aucun payload n'est accepté (anti-usurpation).
+		socket.emit(LOBBY_EVENT.USER_JOIN);
 
 		socket.on(LOBBY_EVENT.STATE, (data: { players: Player[]; rooms: Room[] }) => {
 			players = data.players;
@@ -261,11 +257,8 @@
 				activeBullet: result.activeBullet,
 				activeBulletSecondary: result.activeBulletSecondary
 			});
-			socket?.emit('user:updateLoadout', {
-				activeShip: result.activeShip,
-				activeBullet: result.activeBullet,
-				activeBulletSecondary: result.activeBulletSecondary
-			});
+			// Notifie simplement le serveur, qui relit le loadout depuis la DB
+			socket?.emit('user:updateLoadout');
 		} finally {
 			equipLoading = null;
 		}

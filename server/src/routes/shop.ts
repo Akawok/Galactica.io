@@ -104,10 +104,21 @@ export async function shopRoutes(app: FastifyInstance) {
       if (!user)
         return reply.code(404).send({ error: "Utilisateur non trouvé" });
 
+      // L'item doit exister dans le catalogue et être possédé (ou gratuit) —
+      // sinon n'importe quel sprite arbitraire pourrait être équipé.
+      const item = await Item.findOne({ sprite, type }).select("price bulletRole").lean();
+      if (!item) return reply.code(404).send({ error: "Item non trouvé" });
+      const owned =
+        item.price === 0 ||
+        user.inventory.some((ref) => ref.toString() === item._id.toString());
+      if (!owned) return reply.code(403).send({ error: "Item non possédé" });
+
       if (type === "ship") {
         user.activeShip = sprite;
       } else if (type === "bullet") {
-        if (role === "secondary") user.activeBulletSecondary = sprite;
+        // Le rôle vient de l'item lui-même, pas du client
+        const itemRole = item.bulletRole ?? role;
+        if (itemRole === "secondary") user.activeBulletSecondary = sprite;
         else user.activeBullet = sprite;
       }
 

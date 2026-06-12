@@ -53,6 +53,23 @@ const io = new Server(httpServer, {
   cors: { origin: config.clientUrl, methods: ["GET", "POST"] },
 });
 
+// Authentification obligatoire : le client envoie son JWT dans socket.handshake.auth.token.
+// L'identité (userId/username) est dérivée du token vérifié — jamais des payloads client.
+io.use((socket, next) => {
+  try {
+    const token = socket.handshake.auth?.token;
+    if (typeof token !== "string" || !token) {
+      return next(new Error("Authentification requise"));
+    }
+    const payload = app.jwt.verify<{ id: string; username: string }>(token);
+    socket.data.userId = payload.id;
+    socket.data.username = payload.username;
+    next();
+  } catch {
+    next(new Error("Token invalide"));
+  }
+});
+
 io.on("connection", (socket) => {
   app.log.info(`Socket connecté : ${socket.id}`);
   registerLobbySocket(io, socket);
