@@ -1,10 +1,12 @@
+import { Item } from "../models/Item.js";
+
 export { xpForLevel, applyXP } from "../shared/xp.js";
 
 export const GAME_CONFIG = {
   MAP_WIDTH: 1280,
   MAP_HEIGHT: 720,
   SHIP_SPEED: 3,
-  SHIP_RADIUS: 16, // hitbox circulaire
+  SHIP_RADIUS: 24, // hitbox circulaire (75% de la demi-largeur du sprite 64px)
   MAX_HP: 100,
   MAX_ENERGY: 100,
   ENERGY_REGEN: 5 / 60, // par tick (60 tick/s)
@@ -18,12 +20,81 @@ export const GAME_CONFIG = {
   BULLET_RADIUS: 6,
   ROUNDS_TO_WIN: 3,
   POINTS_PER_WIN: 100,
+  CREDITS_PER_LOSS: 25, // le perdant progresse aussi (victoire = 4× plus rentable)
+  GALACTICS_PER_LEVEL: 1,
+  // Désertion : pénalité = 5% × (nº de désertion) du solde courant, plafonnée
+  // à 50%, intégralement transférée à l'adversaire lésé.
+  DESERTION_PENALTY_RATE: 0.05,
+  DESERTION_PENALTY_CAP: 0.5,
   XP_PER_WIN: 120,
   XP_PER_LOSS: 40,
   TICK_RATE: 1000 / 60,
 };
 
-export interface PlayerState {
+// Stats effectives d'un joueur, dérivées de son équipement (DB).
+// Les valeurs GAME_CONFIG ci-dessus servent de base/fallback.
+export interface LoadoutStats {
+  maxHp: number;
+  maxEnergy: number;
+  speed: number;
+  primaryDamage: number;
+  primaryCooldown: number;
+  specialDamage: number;
+  specialCooldown: number;
+  specialEnergyCost: number;
+}
+
+function clampStat(
+  value: unknown,
+  min: number,
+  max: number,
+  fallback: number,
+): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.min(max, Math.max(min, value))
+    : fallback;
+}
+
+// Charge les stats de l'équipement depuis la DB (source de vérité — jamais le client).
+// Les clamps protègent la simulation contre des données DB aberrantes.
+export async function loadLoadoutStats(
+  ship: string,
+  bulletPrimary: string,
+  bulletSecondary: string,
+): Promise<LoadoutStats> {
+  const [shipItem, primaryItem, specialItem] = await Promise.all([
+    Item.findOne({ sprite: ship, type: "ship" }).select("stats").lean(),
+    Item.findOne({ sprite: bulletPrimary, type: "bullet", bulletRole: "primary" })
+      .select("stats")
+      .lean(),
+    Item.findOne({ sprite: bulletSecondary, type: "bullet", bulletRole: "secondary" })
+      .select("stats")
+      .lean(),
+  ]);
+
+  return {
+    maxHp: clampStat(shipItem?.stats?.hp, 50, 300, GAME_CONFIG.MAX_HP),
+    maxEnergy: clampStat(shipItem?.stats?.energy, 50, 300, GAME_CONFIG.MAX_ENERGY),
+    speed: clampStat(shipItem?.stats?.speed, 1, 6, GAME_CONFIG.SHIP_SPEED),
+    primaryDamage: clampStat(
+      primaryItem?.stats?.damage, 1, 100, GAME_CONFIG.BULLET_NORMAL_DAMAGE,
+    ),
+    primaryCooldown: clampStat(
+      primaryItem?.stats?.cooldown, 80, 5000, GAME_CONFIG.BULLET_NORMAL_COOLDOWN,
+    ),
+    specialDamage: clampStat(
+      specialItem?.stats?.damage, 1, 150, GAME_CONFIG.BULLET_SPECIAL_DAMAGE,
+    ),
+    specialCooldown: clampStat(
+      specialItem?.stats?.cooldown, 500, 10_000, GAME_CONFIG.BULLET_SPECIAL_COOLDOWN,
+    ),
+    specialEnergyCost: clampStat(
+      specialItem?.stats?.energy, 0, 100, GAME_CONFIG.BULLET_SPECIAL_ENERGY,
+    ),
+  };
+}
+
+export interface PlayerState extends LoadoutStats {
   id: string; // socket id
   userId: string;
   username: string;
@@ -81,7 +152,8 @@ export function createPlayerState(
   playerIndex: number,
   sprite: string,
   bulletSprite: string,
-  bulletSpriteSecondary: string = "bullet1",
+  bulletSpriteSecondary: string,
+  stats: LoadoutStats,
 ): PlayerState {
   const { x, y } = getSpawnPosition(playerIndex);
   return {
@@ -91,14 +163,15 @@ export function createPlayerState(
     x,
     y,
     angle: playerIndex === 0 ? 0 : Math.PI,
-    hp: GAME_CONFIG.MAX_HP,
-    energy: GAME_CONFIG.MAX_ENERGY,
+    hp: stats.maxHp,
+    energy: stats.maxEnergy,
     sprite,
     bulletSprite,
     bulletSpriteSecondary,
     lastNormalShot: 0,
     lastSpecialShot: 0,
     prevRightClick: false,
+    ...stats,
   };
 }
 
@@ -132,14 +205,14 @@ export function applyInput(
       GAME_CONFIG.SHIP_RADIUS,
       Math.min(
         GAME_CONFIG.MAP_WIDTH - GAME_CONFIG.SHIP_RADIUS,
-        player.x + (dx / len) * GAME_CONFIG.SHIP_SPEED,
+        player.x + (dx / len) * player.speed,
       ),
     );
     player.y = Math.max(
       GAME_CONFIG.SHIP_RADIUS,
       Math.min(
         GAME_CONFIG.MAP_HEIGHT - GAME_CONFIG.SHIP_RADIUS,
-        player.y + (dy / len) * GAME_CONFIG.SHIP_SPEED,
+        player.y + (dy / len) * player.speed,
       ),
     );
   }
@@ -154,7 +227,7 @@ export function applyInput(
   // Tir normal (clic gauche maintenu, régulé par cooldown)
   if (
     input.leftClick &&
-    now - player.lastNormalShot >= GAME_CONFIG.BULLET_NORMAL_COOLDOWN
+    now - player.lastNormalShot >= player.primaryCooldown
   ) {
     player.lastNormalShot = now;
     bullets.push({
@@ -164,7 +237,7 @@ export function applyInput(
       y: player.y + sin * muzzleOffset,
       vx: cos * GAME_CONFIG.BULLET_NORMAL_SPEED,
       vy: sin * GAME_CONFIG.BULLET_NORMAL_SPEED,
-      damage: GAME_CONFIG.BULLET_NORMAL_DAMAGE,
+      damage: player.primaryDamage,
       radius: GAME_CONFIG.BULLET_RADIUS,
       type: "normal",
       sprite: player.bulletSprite,
@@ -175,11 +248,11 @@ export function applyInput(
   const specialPressed = input.rightClick && !player.prevRightClick;
   if (
     specialPressed &&
-    now - player.lastSpecialShot >= GAME_CONFIG.BULLET_SPECIAL_COOLDOWN &&
-    player.energy >= GAME_CONFIG.BULLET_SPECIAL_ENERGY
+    now - player.lastSpecialShot >= player.specialCooldown &&
+    player.energy >= player.specialEnergyCost
   ) {
     player.lastSpecialShot = now;
-    player.energy -= GAME_CONFIG.BULLET_SPECIAL_ENERGY;
+    player.energy -= player.specialEnergyCost;
     const specialMuzzle = GAME_CONFIG.SHIP_RADIUS + GAME_CONFIG.BULLET_RADIUS * 2 + 1;
     bullets.push({
       id: `${player.id}_s_${now}`,
@@ -188,7 +261,7 @@ export function applyInput(
       y: player.y + sin * specialMuzzle,
       vx: cos * GAME_CONFIG.BULLET_SPECIAL_SPEED,
       vy: sin * GAME_CONFIG.BULLET_SPECIAL_SPEED,
-      damage: GAME_CONFIG.BULLET_SPECIAL_DAMAGE,
+      damage: player.specialDamage,
       radius: GAME_CONFIG.BULLET_RADIUS * 2,
       type: "special",
       sprite: player.bulletSpriteSecondary,
@@ -197,6 +270,50 @@ export function applyInput(
   player.prevRightClick = input.rightClick;
 
   return bullets;
+}
+
+// Collision vaisseau-vaisseau SANS dégâts : sépare les paires qui se
+// chevauchent en repoussant chaque vaisseau de la moitié de la pénétration,
+// borné aux limites de la map. Appelé chaque tick après les mouvements.
+export function resolveShipCollisions(players: PlayerState[]): void {
+  const minDist = GAME_CONFIG.SHIP_RADIUS * 2;
+  for (let i = 0; i < players.length; i++) {
+    for (let j = i + 1; j < players.length; j++) {
+      const a = players[i];
+      const b = players[j];
+      let dx = b.x - a.x;
+      let dy = b.y - a.y;
+      let dist = Math.hypot(dx, dy);
+      if (dist >= minDist) continue;
+      if (dist === 0) {
+        // Parfaitement superposés : axe de séparation arbitraire
+        dx = 1;
+        dy = 0;
+        dist = 1;
+      }
+      const push = (minDist - dist) / 2;
+      const nx = dx / dist;
+      const ny = dy / dist;
+      a.x = clampToMapX(a.x - nx * push);
+      a.y = clampToMapY(a.y - ny * push);
+      b.x = clampToMapX(b.x + nx * push);
+      b.y = clampToMapY(b.y + ny * push);
+    }
+  }
+}
+
+function clampToMapX(x: number): number {
+  return Math.max(
+    GAME_CONFIG.SHIP_RADIUS,
+    Math.min(GAME_CONFIG.MAP_WIDTH - GAME_CONFIG.SHIP_RADIUS, x),
+  );
+}
+
+function clampToMapY(y: number): number {
+  return Math.max(
+    GAME_CONFIG.SHIP_RADIUS,
+    Math.min(GAME_CONFIG.MAP_HEIGHT - GAME_CONFIG.SHIP_RADIUS, y),
+  );
 }
 
 // Déplace les bullets en place et compacte le tableau, retourne les ids des bullets supprimées (sorties de la map)

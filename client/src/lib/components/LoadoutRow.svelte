@@ -1,5 +1,6 @@
 <script lang="ts">
 	import LoadoutCard from './LoadoutCard.svelte';
+	import type { Component } from 'svelte';
 
 	interface Item {
 		_id: string;
@@ -13,6 +14,8 @@
 	}
 	interface Props {
 		label: string;
+		icon?: Component<{ size?: number | string }>;
+		accent?: string;
 		items: Item[];
 		activeSprite: string | undefined;
 		loadingId: string | null;
@@ -21,12 +24,27 @@
 		onhover: (e: MouseEvent, item: Item) => void;
 		onleave: () => void;
 	}
-	let { label, items, activeSprite, loadingId, emptyText, onequip, onhover, onleave }: Props =
-		$props();
+	let {
+		label,
+		icon: Icon,
+		accent = '#7080b0',
+		items,
+		activeSprite,
+		loadingId,
+		emptyText,
+		onequip,
+		onhover,
+		onleave
+	}: Props = $props();
 </script>
 
 <div class="loadout-row">
-	<span class="loadout-label">{label}</span>
+	<span class="loadout-label">
+		{#if Icon}
+			<span class="loadout-icon" style="color: {accent}"><Icon size={12} /></span>
+		{/if}
+		{label}
+	</span>
 	<div class="loadout-scroll">
 		{#each items as item (item._id)}
 			<LoadoutCard
@@ -50,11 +68,19 @@
 		gap: 0.4rem;
 	}
 	.loadout-label {
+		display: flex;
+		align-items: center;
+		gap: 0.35rem;
 		font-size: 0.72rem;
 		font-weight: 600;
 		color: #7080b0;
 		text-transform: uppercase;
 		letter-spacing: 0.8px;
+	}
+	.loadout-icon {
+		display: inline-flex;
+		align-items: center;
+		filter: drop-shadow(0 0 4px currentColor);
 	}
 	.loadout-scroll {
 		display: flex;

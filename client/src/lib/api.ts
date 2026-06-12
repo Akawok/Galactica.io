@@ -45,7 +45,7 @@ export const api = {
 				points: number;
 			}>('/shop/inventory'),
 		buy: (itemId: string) =>
-			request<{ points: number; inventory: string[] }>('/shop/buy', {
+			request<{ points: number; galactics: number; inventory: string[] }>('/shop/buy', {
 				method: 'POST',
 				body: JSON.stringify({ itemId })
 			}),

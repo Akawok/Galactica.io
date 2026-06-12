@@ -1,6 +1,6 @@
 import type { Server, Socket } from "socket.io";
 import type { RoomState } from "../services/game.service.js";
-import { GAME_CONFIG } from "../services/game.service.js";
+import { loadLoadoutStats } from "../services/game.service.js";
 import {
   registerGameSocket,
   cleanupRoomInputs,
@@ -8,7 +8,7 @@ import {
 } from "./game.js";
 import { ChatMessage } from "../models/ChatMessage.js";
 import { User } from "../models/User.js";
-import { recordMatchResult, saveGameRecord } from "../services/match.service.js";
+import { recordDesertion, saveGameRecord } from "../services/match.service.js";
 
 interface ConnectedPlayer {
   socketId: string;
@@ -97,24 +97,29 @@ async function handlePlayerLeave(io: Server, socketId: string, roomId: string) {
     );
     const leaverEntry = room.players.get(socketId);
 
-    if (opponentEntry) {
+    if (opponentEntry && leaverEntry) {
       const [opponentSocketId, opponent] = opponentEntry;
 
-      const results = await recordMatchResult({
-        winner: { socketId: opponentSocketId, userId: opponent.userId },
-        loser: leaverEntry
-          ? { socketId, userId: leaverEntry.userId }
-          : undefined,
-        awardXP: false,
+      // Désertion : pénalité croissante de crédits transférée à l'adversaire.
+      // Pas de victoire comptée pour l'adversaire, pas d'XP pour personne ;
+      // le déserteur prend défaite + désertion + série remise à zéro.
+      const desertion = await recordDesertion({
+        deserter: { userId: leaverEntry.userId },
+        opponent: { userId: opponent.userId },
       });
 
-      const winnerResult = results.get(opponentSocketId);
-      io.sockets.sockets.get(opponentSocketId)?.emit("game:matchEnd", {
-        winner: { id: opponentSocketId, username: opponent.username },
-        scores: Object.fromEntries(room.scores),
-        pointsEarned: GAME_CONFIG.POINTS_PER_WIN,
-        newPoints: winnerResult?.points ?? null,
+      io.sockets.sockets.get(opponentSocketId)?.emit("game:abandoned", {
+        deserter: leaverEntry.username,
+        creditsRecovered: desertion?.penalty ?? 0,
+        newPoints: desertion?.opponentPoints ?? null,
       });
+      for (const spectatorId of room.spectators) {
+        io.sockets.sockets.get(spectatorId)?.emit("game:abandoned", {
+          deserter: leaverEntry.username,
+          creditsRecovered: 0,
+          newPoints: null,
+        });
+      }
 
       const allPlayers = Array.from(room.players.values());
       await saveGameRecord({
@@ -126,8 +131,6 @@ async function handlePlayerLeave(io: Server, socketId: string, roomId: string) {
         })),
         winnerUserId: opponent.userId,
       });
-
-      io.to(roomId).emit("game:abandoned", { username: opponent.username });
     }
 
     cleanupRoomInputs(io, room);
@@ -213,18 +216,32 @@ export function registerLobbySocket(io: Server, socket: Socket) {
   });
 
   // Rejoindre une room existante
-  socket.on("game:join", (data: { roomId?: string }) => {
+  socket.on("game:join", async (data: { roomId?: string }) => {
     if (typeof data?.roomId !== "string") return;
+    const roomId = data.roomId;
     const player = connectedPlayers.get(socket.id);
-    const room = rooms.get(data.roomId);
+    const room = rooms.get(roomId);
     if (!player || !room || player.status !== "idle") return;
 
     const waitingPlayers = room.waitingPlayers ?? [];
     if (room.status !== "waiting" || waitingPlayers.length >= 2) return;
 
-    socket.join(data.roomId);
+    // Réserve la place de façon SYNCHRONE : le chargement des stats ci-dessous
+    // est async, sans ça deux joueurs pourraient rejoindre la même room.
+    waitingPlayers.push(socket.id);
+    room.waitingPlayers = waitingPlayers;
+    socket.join(roomId);
     player.status = "in-game";
-    player.currentRoomId = data.roomId;
+    player.currentRoomId = roomId;
+
+    const abortJoin = (message: string) => {
+      socket.emit("game:error", { message });
+      socket.leave(roomId);
+      player.status = "idle";
+      player.currentRoomId = undefined;
+      rooms.delete(roomId);
+      broadcastLobbyState(io);
+    };
 
     const player1SocketId = waitingPlayers[0];
     const player1Socket = io.sockets.sockets.get(player1SocketId);
@@ -232,19 +249,41 @@ export function registerLobbySocket(io: Server, socket: Socket) {
 
     if (!player1Socket || !player1) {
       // Le créateur s'est déconnecté entre temps
-      socket.emit("game:error", {
-        message: "Le créateur de la partie s'est déconnecté",
-      });
-      player.status = "idle";
-      rooms.delete(data.roomId);
-      broadcastLobbyState(io);
+      abortJoin("Le créateur de la partie s'est déconnecté");
+      return;
+    }
+
+    // Stats effectives des deux loadouts, lues en DB (jamais fournies par le client)
+    let stats1, stats2;
+    try {
+      [stats1, stats2] = await Promise.all([
+        loadLoadoutStats(
+          player1.activeShip,
+          player1.activeBullet,
+          player1.activeBulletSecondary,
+        ),
+        loadLoadoutStats(
+          player.activeShip,
+          player.activeBullet,
+          player.activeBulletSecondary,
+        ),
+      ]);
+    } catch (err) {
+      console.error("[game:join] erreur chargement loadout:", err);
+      abortJoin("Erreur serveur au lancement de la partie");
+      return;
+    }
+
+    // La room a pu disparaître pendant l'await (déco du créateur)
+    if (!rooms.has(roomId) || room.status !== "waiting") {
+      abortJoin("La partie n'est plus disponible");
       return;
     }
 
     // Démarre la partie avec les 2 joueurs
-    registerGameSocket(io, data.roomId, room, [
-      { socket: player1Socket, player: player1 },
-      { socket, player },
+    registerGameSocket(io, roomId, room, [
+      { socket: player1Socket, player: { ...player1, stats: stats1 } },
+      { socket, player: { ...player, stats: stats2 } },
     ]);
 
     broadcastLobbyState(io);

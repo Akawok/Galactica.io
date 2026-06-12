@@ -1,11 +1,17 @@
 import type { Server, Socket } from "socket.io";
-import type { RoomState, PlayerState, BulletState } from "../services/game.service.js";
+import type {
+  RoomState,
+  PlayerState,
+  BulletState,
+  LoadoutStats,
+} from "../services/game.service.js";
 import {
   GAME_CONFIG,
   createPlayerState,
   applyInput,
   moveBullets,
   resolveCollisions,
+  resolveShipCollisions,
   getSpawnPosition,
 } from "../services/game.service.js";
 import { recordMatchResult, saveGameRecord } from "../services/match.service.js";
@@ -19,6 +25,7 @@ interface PlayerEntry {
     activeShip: string;
     activeBullet: string;
     activeBulletSecondary: string;
+    stats: LoadoutStats;
   };
 }
 
@@ -76,8 +83,8 @@ function resetRound(room: RoomState) {
     const pos = getSpawnPosition(index);
     player.x = pos.x;
     player.y = pos.y;
-    player.hp = GAME_CONFIG.MAX_HP;
-    player.energy = GAME_CONFIG.MAX_ENERGY;
+    player.hp = player.maxHp;
+    player.energy = player.maxEnergy;
     player.angle = index === 0 ? 0 : Math.PI;
     index++;
   }
@@ -95,6 +102,9 @@ function buildStartPayload(room: RoomState) {
         angle,
         hp,
         energy,
+        maxHp,
+        maxEnergy,
+        speed,
         sprite,
         bulletSprite,
         bulletSpriteSecondary,
@@ -106,6 +116,10 @@ function buildStartPayload(room: RoomState) {
         angle,
         hp,
         energy,
+        // maxHp/maxEnergy pour les barres, speed pour la prédiction locale du joueur
+        maxHp,
+        maxEnergy,
+        speed,
         sprite,
         bulletSprite,
         bulletSpriteSecondary,
@@ -148,6 +162,7 @@ export function registerGameSocket(
       entry.player.activeShip,
       entry.player.activeBullet,
       entry.player.activeBulletSecondary,
+      entry.player.stats,
     );
     room.players.set(entry.socket.id, state);
     room.scores.set(entry.socket.id, 0);
@@ -224,10 +239,13 @@ function makeTick(io: Server, roomId: string, room: RoomState) {
       // Régénération d'énergie : par tick serveur, pas par input reçu
       // (sinon spammer des inputs accélère la regen).
       player.energy = Math.min(
-        GAME_CONFIG.MAX_ENERGY,
+        player.maxEnergy,
         player.energy + GAME_CONFIG.ENERGY_REGEN,
       );
     }
+
+    // Les vaisseaux ne peuvent pas se chevaucher (collision sans dégâts)
+    resolveShipCollisions(players);
 
     const removed = moveBullets(room.bullets);
     const hitRemoved = resolveCollisions(room.bullets, players);
@@ -413,12 +431,17 @@ async function endMatch(
         const data = results.get(p.id);
         playerSocket?.emit("game:matchEnd", {
           ...matchEndBase,
-          pointsEarned: p.id === winnerSocketId ? GAME_CONFIG.POINTS_PER_WIN : 0,
+          pointsEarned:
+            p.id === winnerSocketId
+              ? GAME_CONFIG.POINTS_PER_WIN
+              : GAME_CONFIG.CREDITS_PER_LOSS,
           newPoints: data?.points ?? null,
           xpGained: data?.xpGained ?? null,
           newXP: data?.xp ?? null,
           newLevel: data?.level ?? null,
           leveledUp: data?.leveledUp ?? false,
+          galacticsGained: data?.galacticsGained ?? 0,
+          newGalactics: data?.galactics ?? null,
         });
       }
 

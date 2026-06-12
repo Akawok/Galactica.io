@@ -51,25 +51,46 @@ export async function shopRoutes(app: FastifyInstance) {
       const { id } = req.user as { id: string };
       const { itemId } = req.body;
 
-      const item = await Item.findById(itemId).select("price").lean();
+      const item = await Item.findById(itemId)
+        .select("price priceGalactics")
+        .lean();
       if (!item) return reply.code(404).send({ error: "Item non trouvé" });
+      const galacticsCost = item.priceGalactics ?? 0;
 
+      // Débit atomique des deux monnaies : les conditions $gte garantissent
+      // qu'on ne passe jamais en négatif même en cas d'achats concurrents.
       const updated = await User.findOneAndUpdate(
-        { _id: id, points: { $gte: item.price }, inventory: { $ne: item._id } },
-        { $inc: { points: -item.price }, $addToSet: { inventory: item._id } },
+        {
+          _id: id,
+          points: { $gte: item.price },
+          galactics: { $gte: galacticsCost },
+          inventory: { $ne: item._id },
+        },
+        {
+          $inc: { points: -item.price, galactics: -galacticsCost },
+          $addToSet: { inventory: item._id },
+        },
         { new: true },
-      ).select("points inventory");
+      ).select("points galactics inventory");
 
       if (!updated) {
-        const user = await User.findById(id).select("points inventory").lean();
+        const user = await User.findById(id)
+          .select("points galactics inventory")
+          .lean();
         if (!user)
           return reply.code(404).send({ error: "Utilisateur non trouvé" });
         if (user.inventory.some((ref: any) => ref.toString() === itemId))
           return reply.code(400).send({ error: "Item déjà possédé" });
-        return reply.code(400).send({ error: "Points insuffisants" });
+        if (user.points < item.price)
+          return reply.code(400).send({ error: "Crédits insuffisants" });
+        return reply.code(400).send({ error: "Galactics insuffisants" });
       }
 
-      return reply.send({ points: updated.points, inventory: updated.inventory });
+      return reply.send({
+        points: updated.points,
+        galactics: updated.galactics ?? 0,
+        inventory: updated.inventory,
+      });
     },
   );
 

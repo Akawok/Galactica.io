@@ -5,6 +5,7 @@
 	import { connectSocket, disconnectSocket } from '$lib/stores/socket';
 	import { addMessage } from '$lib/stores/chat';
 	import Rocket from '@lucide/svelte/icons/rocket';
+	import Gem from '@lucide/svelte/icons/gem';
 	import { getGrade } from '$lib/grades';
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
@@ -69,7 +70,7 @@
 			<div class="nav-credits">
 				<span class="nav-credit-item"><span class="nav-credit-icon">⭐</span>{($currentUser?.points ?? 0).toLocaleString('fr-FR')} Crédits</span>
 				<span class="nav-credit-sep">·</span>
-				<span class="nav-credit-item"><span class="nav-credit-icon">💠</span>{((($currentUser?.points ?? 0) * 5.4) | 0).toLocaleString('fr-FR')} Galactics</span>
+				<span class="nav-credit-item nav-galactics"><Gem size={13} />{($currentUser?.galactics ?? 0).toLocaleString('fr-FR')} Galactics</span>
 			</div>
 			<button class="logout-btn" onclick={logout} title="Déconnexion">
 				<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -239,6 +240,14 @@
 	}
 	.nav-credit-icon {
 		font-size: 0.9rem;
+	}
+	/* Galactics : même icône (Gem) et même couleur que dans le Shop */
+	.nav-credit-item.nav-galactics {
+		color: #c4b5fd;
+	}
+	:global(.nav-galactics svg) {
+		display: inline-block;
+		flex-shrink: 0;
 	}
 	.nav-credit-sep {
 		color: rgba(255, 215, 0, 0.3);

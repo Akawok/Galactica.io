@@ -7,7 +7,8 @@ export interface IItem extends Document {
   name: string;
   type: ItemType;
   bulletRole?: BulletRole; // uniquement pour les bullets
-  price: number;
+  price: number; // en Crédits
+  priceGalactics: number; // coût additionnel en Galactics (barrière de progression)
   description: string;
   sprite: string;
   stats: {
@@ -24,6 +25,7 @@ const ItemSchema = new Schema<IItem>({
   type: { type: String, enum: ["ship", "bullet", "cosmetic"], required: true },
   bulletRole: { type: String, enum: ["primary", "secondary"], default: null },
   price: { type: Number, required: true },
+  priceGalactics: { type: Number, default: 0 },
   description: { type: String, default: "" },
   sprite: { type: String, required: true },
   stats: {

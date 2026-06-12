@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
+	import Gem from '@lucide/svelte/icons/gem';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { currentUser, auth } from '$lib/stores/auth';
@@ -19,7 +20,9 @@
 		xpGained: number | null;
 		newLevel: number | null;
 		leveledUp: boolean;
+		galacticsGained: number;
 	} | null>(null);
+	let abandonResult = $state<{ deserter: string; creditsRecovered: number } | null>(null);
 	let isSpectator = $state(false);
 
 	const roomId = $page.params.roomId;
@@ -91,6 +94,8 @@
 				newXP: number | null;
 				newLevel: number | null;
 				leveledUp: boolean;
+				galacticsGained?: number;
+				newGalactics?: number | null;
 			}) => {
 				status = 'matchEnd';
 				matchResult = {
@@ -98,26 +103,33 @@
 					pointsEarned: data.pointsEarned,
 					xpGained: data.xpGained,
 					newLevel: data.newLevel,
-					leveledUp: data.leveledUp
+					leveledUp: data.leveledUp,
+					galacticsGained: data.galacticsGained ?? 0
 				};
 				const updates: any = {};
 				if (data.newPoints !== null) updates.points = data.newPoints;
 				if (data.newXP !== null) updates.xp = data.newXP;
 				if (data.newLevel !== null) updates.level = data.newLevel;
+				if (data.newGalactics !== null && data.newGalactics !== undefined)
+					updates.galactics = data.newGalactics;
 				if (Object.keys(updates).length) auth.updateUser(updates);
 			}
 		);
 
-		socket.on('game:abandoned', () => {
-			status = 'matchEnd';
-			matchResult = {
-				winner: user.username,
-				pointsEarned: 0,
-				xpGained: null,
-				newLevel: null,
-				leveledUp: false
-			};
-		});
+		socket.on(
+			'game:abandoned',
+			(data: { deserter: string; creditsRecovered: number; newPoints: number | null }) => {
+				status = 'matchEnd';
+				matchResult = null;
+				abandonResult = {
+					deserter: data.deserter,
+					creditsRecovered: data.creditsRecovered
+				};
+				if (data.newPoints !== null && !isSpectator) {
+					auth.updateUser({ points: data.newPoints });
+				}
+			}
+		);
 	});
 
 	onDestroy(() => {
@@ -172,23 +184,51 @@
 		</div>
 	{/if}
 
+	{#if status === 'matchEnd' && abandonResult}
+		<div class="overlay">
+			<div class="overlay-card">
+				<div class="winner-emoji">💨</div>
+				<h2>{abandonResult.deserter} a déserté !</h2>
+				{#if isSpectator}
+					<p>La partie est terminée</p>
+				{:else if abandonResult.creditsRecovered > 0}
+					<p>
+						Tu saisis <strong>+{abandonResult.creditsRecovered} Crédits</strong> sur sa caution
+					</p>
+				{:else}
+					<p>Le déserteur n'avait aucun crédit à saisir</p>
+				{/if}
+				<button class="btn btn-primary" onclick={backToLobby}>Retour au lobby</button>
+			</div>
+		</div>
+	{/if}
+
 	{#if status === 'matchEnd' && matchResult}
 		<div class="overlay">
 			<div class="overlay-card">
 				{#if matchResult.winner === $currentUser?.username}
 					<div class="winner-emoji">🏆</div>
 					<h2>Victoire !</h2>
-					<p>Tu as gagné <strong>+{matchResult.pointsEarned} pts</strong></p>
+					<p>Tu as gagné <strong>+{matchResult.pointsEarned} Crédits</strong></p>
 				{:else}
 					<div class="winner-emoji">💫</div>
 					<h2>{matchResult.winner} a gagné</h2>
 					<p>Meilleure chance la prochaine fois</p>
+					{#if matchResult.pointsEarned > 0}
+						<p><strong>+{matchResult.pointsEarned} Crédits</strong> de consolation</p>
+					{/if}
 				{/if}
 
 				{#if matchResult.xpGained !== null}
 					<div class="xp-reward">
 						{#if matchResult.leveledUp}
 							<span class="levelup-badge">🎉 Niveau {matchResult.newLevel} !</span>
+						{/if}
+						{#if matchResult.galacticsGained > 0}
+							<span class="galactics-gained">
+								<Gem size={13} /> +{matchResult.galacticsGained}
+								{matchResult.galacticsGained > 1 ? 'Galactics' : 'Galactic'}
+							</span>
 						{/if}
 						<span class="xp-gained">+{matchResult.xpGained} XP</span>
 					</div>
@@ -327,6 +367,23 @@
 		border: 1px solid rgba(255, 215, 0, 0.3);
 		border-radius: 20px;
 		padding: 0.25rem 0.9rem;
+	}
+
+	.galactics-gained {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35rem;
+		font-size: 0.95rem;
+		font-weight: 700;
+		color: #c4b5fd;
+		background: rgba(167, 139, 250, 0.12);
+		border: 1px solid rgba(167, 139, 250, 0.35);
+		border-radius: 20px;
+		padding: 0.25rem 0.9rem;
+	}
+	:global(.galactics-gained svg) {
+		display: inline-block;
+		flex-shrink: 0;
 	}
 
 	.spectator-badge {

@@ -5,6 +5,7 @@ export interface IUser extends Document {
   email: string;
   passwordHash: string;
   points: number;
+  galactics: number; // monnaie de niveau : +1 à chaque passage de niveau
   xp: number;
   level: number;
   inventory: mongoose.Types.ObjectId[];
@@ -17,6 +18,7 @@ export interface IUser extends Document {
     totalGames: number;
     currentStreak: number;
     bestStreak: number;
+    desertions: number; // abandons de partie en cours — public au classement
   };
   createdAt: Date;
 }
@@ -32,6 +34,7 @@ const UserSchema = new Schema<IUser>({
   },
   passwordHash: { type: String, required: true },
   points: { type: Number, default: 0 },
+  galactics: { type: Number, default: 0 },
   xp: { type: Number, default: 0 },
   level: { type: Number, default: 1 },
   inventory: [{ type: Schema.Types.ObjectId, ref: "Item" }],
@@ -44,6 +47,7 @@ const UserSchema = new Schema<IUser>({
     totalGames: { type: Number, default: 0 },
     currentStreak: { type: Number, default: 0 },
     bestStreak: { type: Number, default: 0 },
+    desertions: { type: Number, default: 0 },
   },
   createdAt: { type: Date, default: Date.now },
 });
@@ -55,6 +59,7 @@ export function serializeUser(user: IUser) {
     id: user._id.toString(),
     username: user.username,
     points: user.points,
+    galactics: user.galactics ?? 0,
     xp: user.xp ?? 0,
     level: user.level ?? 1,
     activeShip: user.activeShip,

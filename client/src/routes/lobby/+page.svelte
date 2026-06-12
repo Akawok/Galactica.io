@@ -22,6 +22,10 @@
 	import Trophy from '@lucide/svelte/icons/trophy';
 	import Skull from '@lucide/svelte/icons/skull';
 	import Zap from '@lucide/svelte/icons/zap';
+	import Bomb from '@lucide/svelte/icons/bomb';
+	import Shield from '@lucide/svelte/icons/shield';
+	import Gem from '@lucide/svelte/icons/gem';
+	import DoorOpen from '@lucide/svelte/icons/door-open';
 	import X from '@lucide/svelte/icons/x';
 	import { getGrade } from '$lib/grades';
 	import type { Socket } from 'socket.io-client';
@@ -44,6 +48,7 @@
 		bulletRole?: string | null;
 		sprite: string;
 		price?: number;
+		priceGalactics?: number;
 		description?: string;
 		stats?: Record<string, number>;
 	}
@@ -72,14 +77,16 @@
 		_id: string;
 		username: string;
 		level: number;
-		stats: { wins: number; losses: number; totalGames: number };
+		stats: { wins: number; losses: number; totalGames: number; desertions?: number };
 	}
 	let leaderboard = $state<LeaderboardPlayer[]>([]);
-	let lbSort = $state<'wins' | 'losses' | 'level'>('wins');
+	let lbSort = $state<'wins' | 'losses' | 'level' | 'desertions'>('wins');
 	const lbSorted = $derived(
 		[...leaderboard].sort((a, b) => {
 			if (lbSort === 'wins') return b.stats.wins - a.stats.wins;
 			if (lbSort === 'losses') return b.stats.losses - a.stats.losses;
+			if (lbSort === 'desertions')
+				return (b.stats.desertions ?? 0) - (a.stats.desertions ?? 0);
 			return (b.level ?? 1) - (a.level ?? 1);
 		})
 	);
@@ -127,8 +134,8 @@
 		if (buyLoading) return;
 		buyLoading = item._id;
 		try {
-			const { points } = await api.shop.buy(item._id);
-			auth.updateUser({ points });
+			const { points, galactics } = await api.shop.buy(item._id);
+			auth.updateUser({ points, galactics });
 			ownedIds = new Set([...ownedIds, String(item._id)]);
 			inventory = [...inventory, item];
 		} finally {
@@ -166,7 +173,8 @@
 			auth.updateUser({
 				xp: statsUser.xp ?? 0,
 				level: statsUser.level ?? 1,
-				points: statsUser.points ?? 0
+				points: statsUser.points ?? 0,
+				galactics: statsUser.galactics ?? 0
 			});
 		}
 
@@ -362,6 +370,8 @@
 			{#if leftTab === 'armement'}
 				<LoadoutRow
 					label="Vaisseau"
+					icon={Rocket}
+					accent="#4dd9ff"
 					items={ships}
 					activeSprite={$currentUser?.activeShip}
 					loadingId={equipLoading}
@@ -371,7 +381,9 @@
 					onleave={hidePopover}
 				/>
 				<LoadoutRow
-					label="🔴 Missile principal"
+					label="Missile principal"
+					icon={Zap}
+					accent="#ff5566"
 					items={primaryBullets}
 					activeSprite={$currentUser?.activeBullet}
 					loadingId={equipLoading}
@@ -381,7 +393,9 @@
 					onleave={hidePopover}
 				/>
 				<LoadoutRow
-					label="🟠 Missile secondaire"
+					label="Missile secondaire"
+					icon={Bomb}
+					accent="#ffaa33"
 					items={secondaryBullets}
 					activeSprite={$currentUser?.activeBulletSecondary}
 					loadingId={equipLoading}
@@ -391,7 +405,10 @@
 					onleave={hidePopover}
 				/>
 				<div class="shield-row">
-					<span class="shield-label">Bouclier</span>
+					<span class="shield-label">
+						<span class="shield-label-icon"><Shield size={12} /></span>
+						Bouclier
+					</span>
 					<div class="shield-scroll">
 						<div class="shield-card">
 							<span class="shield-lock"><Lock size={14} /></span>
@@ -404,22 +421,35 @@
 					<button
 						class="shop-stab"
 						class:active={shopTab === 'ship'}
-						onclick={() => (shopTab = 'ship')}><Rocket size={14} /></button
+						style="--accent: #4dd9ff"
+						onclick={() => (shopTab = 'ship')}
 					>
+						<Rocket size={13} /> Vaisseaux
+					</button>
 					<button
 						class="shop-stab"
 						class:active={shopTab === 'primary'}
-						onclick={() => (shopTab = 'primary')}>🔴</button
+						style="--accent: #ff5566"
+						onclick={() => (shopTab = 'primary')}
 					>
+						<Zap size={13} /> Missile I
+					</button>
 					<button
 						class="shop-stab"
 						class:active={shopTab === 'secondary'}
-						onclick={() => (shopTab = 'secondary')}>🟠</button
+						style="--accent: #ffaa33"
+						onclick={() => (shopTab = 'secondary')}
 					>
+						<Bomb size={13} /> Missile II
+					</button>
 				</div>
 
 				<div class="shop-balance">
 					⭐ <span>{($currentUser?.points ?? 0).toLocaleString('fr-FR')} Crédits</span>
+					<span class="shop-galactics">
+						<Gem size={12} />
+						{($currentUser?.galactics ?? 0).toLocaleString('fr-FR')} Galactics
+					</span>
 				</div>
 
 				<div class="shop-list">
@@ -438,14 +468,25 @@
 							</div>
 							<div class="shop-card-info">
 								<span class="shop-card-name">{item.name}</span>
-								<span class="shop-card-price"
-									>{item.price === 0 ? 'Gratuit' : `⭐ ${item.price} Crédits`}</span
-								>
+								<span class="shop-card-price">
+									{#if item.price === 0 && !(item.priceGalactics ?? 0)}
+										Gratuit
+									{:else}
+										⭐ {item.price}
+										{#if item.priceGalactics}
+											<span class="price-galactics">
+												+ <Gem size={11} />
+												{item.priceGalactics}
+											</span>
+										{/if}
+									{/if}
+								</span>
 							</div>
 							<button
 								class="btn btn-primary btn-sm"
 								disabled={buyLoading === item._id ||
-									($currentUser?.points ?? 0) < (item.price ?? 0)}
+									($currentUser?.points ?? 0) < (item.price ?? 0) ||
+									($currentUser?.galactics ?? 0) < (item.priceGalactics ?? 0)}
 								onclick={() => buyItem(item)}
 							>
 								{buyLoading === item._id ? '…' : item.price === 0 ? 'Obtenir' : 'Acheter'}
@@ -712,15 +753,21 @@
 						class:active={lbSort === 'level'}
 						onclick={() => (lbSort = 'level')}><Zap size={14} /> Niveau</button
 					>
+					<button
+						class="lb-stab"
+						class:active={lbSort === 'desertions'}
+						onclick={() => (lbSort = 'desertions')}><DoorOpen size={14} /> Désertions</button
+					>
 				</div>
 				<div class="lb-list">
 					{#each lbSorted as p, i (p._id)}
 						<div class="lb-row" class:lb-me={p.username === $currentUser?.username}>
 							<span class="lb-rank">{lbMedal(i)}</span>
 							<span class="lb-name">{p.username}</span>
-							<span class="lb-val">
+							<span class="lb-val" class:lb-desertions={lbSort === 'desertions'}>
 								{#if lbSort === 'wins'}{p.stats.wins}
 								{:else if lbSort === 'losses'}{p.stats.losses}
+								{:else if lbSort === 'desertions'}{p.stats.desertions ?? 0}
 								{:else}Niv. {p.level ?? 1}{/if}
 							</span>
 						</div>
@@ -907,6 +954,7 @@
 	:global(.chat-col-title svg),
 	:global(.ltab svg),
 	:global(.lb-stab svg),
+	:global(.shop-stab svg),
 	:global(.waiting-row svg),
 	:global(.btn-hero svg),
 	:global(.btn-ghost svg) {
@@ -965,11 +1013,20 @@
 		gap: 0.4rem;
 	}
 	.shield-label {
+		display: flex;
+		align-items: center;
+		gap: 0.35rem;
 		font-size: 0.72rem;
 		font-weight: 600;
 		color: #7080b0;
 		text-transform: uppercase;
 		letter-spacing: 0.8px;
+	}
+	.shield-label-icon {
+		display: inline-flex;
+		align-items: center;
+		color: #a78bfa;
+		filter: drop-shadow(0 0 4px currentColor);
 	}
 	.shield-scroll {
 		display: flex;
@@ -1044,24 +1101,37 @@
 	}
 	.shop-stab {
 		flex: 1;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.35rem;
 		background: rgba(255, 255, 255, 0.03);
 		border: 1px solid rgba(77, 217, 255, 0.12);
 		border-radius: 8px;
-		font-size: 1rem;
-		padding: 0.35rem 0;
+		color: #6870a0;
+		font-size: 0.72rem;
+		font-weight: 600;
+		padding: 0.4rem 0;
 		cursor: pointer;
 		transition: all 0.15s;
 	}
 	.shop-stab:hover {
+		color: #a0b0d0;
 		border-color: rgba(77, 217, 255, 0.3);
 	}
+	/* L'onglet actif prend la couleur d'accent de sa catégorie (--accent inline),
+	   la même que l'icône de section correspondante dans Armement. */
 	.shop-stab.active {
-		border-color: #4dd9ff;
-		background: rgba(77, 217, 255, 0.08);
-		box-shadow: 0 0 8px rgba(77, 217, 255, 0.2);
+		color: var(--accent, #4dd9ff);
+		border-color: var(--accent, #4dd9ff);
+		background: rgba(255, 255, 255, 0.05);
+		box-shadow: 0 0 10px color-mix(in srgb, var(--accent, #4dd9ff) 25%, transparent);
 	}
 
 	.shop-balance {
+		display: flex;
+		align-items: center;
+		gap: 0.8rem;
 		font-size: 0.78rem;
 		color: #6870a0;
 		margin-bottom: 0.6rem;
@@ -1069,6 +1139,16 @@
 	.shop-balance span {
 		color: #ffd700;
 		font-weight: 700;
+	}
+	.shop-balance .shop-galactics {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.3rem;
+		color: #c4b5fd;
+	}
+	:global(.shop-galactics svg) {
+		display: inline-block;
+		flex-shrink: 0;
 	}
 
 	.shop-list {
@@ -1126,9 +1206,22 @@
 		white-space: nowrap;
 	}
 	.shop-card-price {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
 		font-size: 0.72rem;
 		color: #ffd700;
 		font-weight: 600;
+	}
+	.shop-card-price .price-galactics {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.2rem;
+		color: #c4b5fd;
+	}
+	:global(.price-galactics svg) {
+		display: inline-block;
+		flex-shrink: 0;
 	}
 
 	/* ====== Center col ====== */
@@ -1830,6 +1923,9 @@
 		font-weight: 700;
 		font-size: 0.75rem;
 		flex-shrink: 0;
+	}
+	.lb-val.lb-desertions {
+		color: #ff6b6b;
 	}
 
 	/* ====== Buttons ====== */

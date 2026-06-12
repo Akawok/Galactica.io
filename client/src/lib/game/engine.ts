@@ -11,7 +11,12 @@ import {
 	type Ticker
 } from 'pixi.js';
 import { Starfield } from './starfield';
-import { applyMovement, type PredictedInput, type PredictedPlayer } from './physics';
+import {
+	GAME_CONFIG,
+	applyMovement,
+	type PredictedInput,
+	type PredictedPlayer
+} from './physics';
 import type { Socket } from 'socket.io-client';
 
 // Particules de propulseur : données pures, dessinées chaque frame dans UN SEUL
@@ -34,6 +39,9 @@ interface PlayerState {
 	angle: number;
 	hp: number;
 	energy: number;
+	maxHp?: number;
+	maxEnergy?: number;
+	speed?: number;
 }
 interface PlayerDelta {
 	id: string;
@@ -142,7 +150,7 @@ export class GameEngine {
 	private inputIntervalId: ReturnType<typeof setInterval> | null = null;
 	private inputSeq = 0;
 
-	private predicted: PredictedPlayer = { x: 0, y: 0, angle: 0 };
+	private predicted: PredictedPlayer = { x: 0, y: 0, angle: 0, speed: 3 };
 	private pendingInputs: { seq: number; input: PredictedInput }[] = [];
 	private hasPredictedState = false;
 	private static readonly MAX_PENDING_INPUTS = 200;
@@ -229,6 +237,16 @@ export class GameEngine {
 		canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 	}
 
+	// Positions serveur connues des autres vaisseaux — utilisées pour prédire
+	// la collision vaisseau-vaisseau (le serveur sépare, on anticipe la poussée).
+	private getBlockers(): { x: number; y: number }[] {
+		const blockers: { x: number; y: number }[] = [];
+		for (const [id, v] of this.playerVisuals) {
+			if (id !== this.myId) blockers.push({ x: v.targetX, y: v.targetY });
+		}
+		return blockers;
+	}
+
 	private updateMouseAngle() {
 		// Position prédite plutôt que visuelle : l'angle reste exact même quand
 		// le vaisseau bouge alors que la souris est immobile.
@@ -262,7 +280,7 @@ export class GameEngine {
 		});
 
 		if (this.hasPredictedState) {
-			applyMovement(this.predicted, input);
+			applyMovement(this.predicted, input, this.getBlockers());
 			this.pendingInputs.push({ seq: this.inputSeq, input });
 			// Garde-fou : si le serveur cesse d'acquitter (lag fort, déco), on ne laisse pas la queue exploser.
 			if (this.pendingInputs.length > GameEngine.MAX_PENDING_INPUTS) {
@@ -336,6 +354,12 @@ export class GameEngine {
 
 		const shipSprite = this.createShipSprite(p.sprite, p.id);
 
+		// Hitbox réelle (SHIP_RADIUS serveur) en cercle très fin — lisibilité des
+		// impacts et des collisions vaisseau-vaisseau.
+		const hitbox = new Graphics()
+			.circle(0, 0, GAME_CONFIG.SHIP_RADIUS)
+			.stroke({ width: 1, color: p.id === this.myId ? 0x4dd9ff : 0xff6b6b, alpha: 0.35 });
+
 		const hpBg = new Graphics().rect(-24, 30, 48, 5).fill({ color: 0x333333 });
 		const hpBar = new Graphics().rect(-24, 30, 48, 5).fill({ color: 0x44ff44 });
 		const energyBg = new Graphics().rect(-24, 37, 48, 4).fill({ color: 0x333333 });
@@ -348,7 +372,7 @@ export class GameEngine {
 		nameText.anchor.set(0.5, 1);
 		nameText.y = -32;
 
-		container.addChild(hpBg, hpBar, energyBg, energyBar, shipSprite, nameText);
+		container.addChild(hitbox, hpBg, hpBar, energyBg, energyBar, shipSprite, nameText);
 		container.x = p.x;
 		container.y = p.y;
 
@@ -374,6 +398,9 @@ export class GameEngine {
 			this.predicted.x = p.x;
 			this.predicted.y = p.y;
 			this.predicted.angle = p.angle;
+			// Vitesse du vaisseau équipé : la prédiction doit utiliser la même
+			// valeur que la simulation serveur.
+			this.predicted.speed = p.speed ?? 3;
 			this.hasPredictedState = true;
 		}
 	}
@@ -404,8 +431,9 @@ export class GameEngine {
 
 				const acked = p.lastProcessedSeq ?? 0;
 				this.pendingInputs = this.pendingInputs.filter((pi) => pi.seq > acked);
+				const blockers = this.getBlockers();
 				for (const pending of this.pendingInputs) {
-					applyMovement(this.predicted, pending.input);
+					applyMovement(this.predicted, pending.input, blockers);
 				}
 			} else {
 				const prevX = visual.container.x;
@@ -642,8 +670,8 @@ export class GameEngine {
 	}
 
 	private updateBars(v: PlayerVisual) {
-		const hpRatio = Math.max(0, v.state.hp / 100);
-		const energyRatio = Math.max(0, v.state.energy / 100);
+		const hpRatio = Math.max(0, v.state.hp / (v.state.maxHp ?? 100));
+		const energyRatio = Math.max(0, v.state.energy / (v.state.maxEnergy ?? 100));
 
 		v.hpBar
 			.clear()

@@ -5,6 +5,7 @@ export interface AuthUser {
 	id: string;
 	username: string;
 	points: number;
+	galactics?: number;
 	xp: number;
 	level: number;
 	activeShip: string;

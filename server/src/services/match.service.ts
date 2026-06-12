@@ -9,6 +9,8 @@ export interface MatchResult {
   level: number;
   xpGained: number;
   leveledUp: boolean;
+  galactics: number;
+  galacticsGained: number;
 }
 
 /**
@@ -33,7 +35,12 @@ export async function recordMatchResult(opts: {
   }
 
   if (opts.loser && mongoose.Types.ObjectId.isValid(opts.loser.userId)) {
-    tasks.push(updateLoser(opts.loser.userId, opts.awardXP));
+    const loserSocketId = opts.loser.socketId;
+    tasks.push(
+      updateLoser(opts.loser.userId, opts.awardXP).then((res) => {
+        if (res) results.set(loserSocketId, res);
+      }),
+    );
   }
 
   await Promise.all(tasks);
@@ -48,6 +55,8 @@ async function updateWinner(userId: string, awardXP: boolean): Promise<MatchResu
 
   const xpGained = awardXP ? GAME_CONFIG.XP_PER_WIN : 0;
   const { level, xp, levelsGained } = applyXP(before.level, before.xp, xpGained);
+  // Les Galactics récompensent le passage de niveau, quelle que soit l'issue du match
+  const galacticsGained = levelsGained * GAME_CONFIG.GALACTICS_PER_LEVEL;
   const newStreak = (before.stats.currentStreak ?? 0) + 1;
   const newBest = Math.max(before.stats.bestStreak ?? 0, newStreak);
 
@@ -56,6 +65,7 @@ async function updateWinner(userId: string, awardXP: boolean): Promise<MatchResu
     {
       $inc: {
         points: GAME_CONFIG.POINTS_PER_WIN,
+        galactics: galacticsGained,
         "stats.wins": 1,
         "stats.totalGames": 1,
       },
@@ -67,7 +77,7 @@ async function updateWinner(userId: string, awardXP: boolean): Promise<MatchResu
       },
     },
     { new: true },
-  ).select("points xp level");
+  ).select("points xp level galactics");
 
   if (!updated) return null;
   return {
@@ -76,6 +86,8 @@ async function updateWinner(userId: string, awardXP: boolean): Promise<MatchResu
     level: updated.level,
     xpGained,
     leveledUp: levelsGained > 0,
+    galactics: updated.galactics ?? 0,
+    galacticsGained,
   };
 }
 
@@ -85,15 +97,24 @@ async function updateLoser(userId: string, awardXP: boolean): Promise<MatchResul
 
   const xpGained = awardXP ? GAME_CONFIG.XP_PER_LOSS : 0;
   const { level, xp, levelsGained } = applyXP(before.level, before.xp, xpGained);
+  const galacticsGained = levelsGained * GAME_CONFIG.GALACTICS_PER_LEVEL;
+  // Une défaite jouée jusqu'au bout rapporte quand même quelques crédits
+  // (awardXP=false sur abandon : le leaver ne touche rien).
+  const creditsGained = awardXP ? GAME_CONFIG.CREDITS_PER_LOSS : 0;
 
   const updated = await User.findByIdAndUpdate(
     userId,
     {
-      $inc: { "stats.losses": 1, "stats.totalGames": 1 },
+      $inc: {
+        points: creditsGained,
+        galactics: galacticsGained,
+        "stats.losses": 1,
+        "stats.totalGames": 1,
+      },
       $set: { xp, level, "stats.currentStreak": 0 },
     },
     { new: true },
-  ).select("points xp level");
+  ).select("points xp level galactics");
 
   if (!updated) return null;
   return {
@@ -102,6 +123,86 @@ async function updateLoser(userId: string, awardXP: boolean): Promise<MatchResul
     level: updated.level,
     xpGained,
     leveledUp: levelsGained > 0,
+    galactics: updated.galactics ?? 0,
+    galacticsGained,
+  };
+}
+
+export interface DesertionResult {
+  penalty: number; // crédits transférés du déserteur vers l'adversaire
+  desertions: number; // nouveau total de désertions du déserteur
+  opponentPoints: number | null; // nouveau solde de l'adversaire
+}
+
+/**
+ * Sanctionne un abandon de partie en cours : le déserteur perd un pourcentage
+ * croissant de ses crédits (5% × nº de désertion, plafonné à 50%), transféré
+ * intégralement à l'adversaire. Le déserteur prend aussi une défaite et voit
+ * sa série remise à zéro — sinon quitter protégerait le ratio V/D.
+ * L'adversaire ne reçoit PAS de victoire : seulement les crédits.
+ */
+export async function recordDesertion(opts: {
+  deserter: { userId: string };
+  opponent: { userId: string };
+}): Promise<DesertionResult | null> {
+  if (!mongoose.Types.ObjectId.isValid(opts.deserter.userId)) return null;
+
+  const deserterBefore = await User.findById(opts.deserter.userId).select(
+    "points stats.desertions",
+  );
+  if (!deserterBefore) return null;
+
+  const desertionNumber = (deserterBefore.stats.desertions ?? 0) + 1;
+  const rate = Math.min(
+    GAME_CONFIG.DESERTION_PENALTY_RATE * desertionNumber,
+    GAME_CONFIG.DESERTION_PENALTY_CAP,
+  );
+  const penalty = Math.max(0, Math.floor((deserterBefore.points ?? 0) * rate));
+
+  // $gte garantit qu'on ne passe jamais en négatif si le solde a bougé entre temps.
+  const deserterUpdated = await User.findOneAndUpdate(
+    { _id: opts.deserter.userId, points: { $gte: penalty } },
+    {
+      $inc: {
+        points: -penalty,
+        "stats.desertions": 1,
+        "stats.losses": 1,
+        "stats.totalGames": 1,
+      },
+      $set: { "stats.currentStreak": 0 },
+    },
+    { new: true },
+  ).select("stats.desertions");
+
+  // Solde modifié concurremment : on inflige la sanction sans le débit de crédits.
+  const effectivePenalty = deserterUpdated ? penalty : 0;
+  if (!deserterUpdated) {
+    await User.findByIdAndUpdate(opts.deserter.userId, {
+      $inc: {
+        "stats.desertions": 1,
+        "stats.losses": 1,
+        "stats.totalGames": 1,
+      },
+      $set: { "stats.currentStreak": 0 },
+    });
+  }
+
+  let opponentPoints: number | null = null;
+  if (mongoose.Types.ObjectId.isValid(opts.opponent.userId)) {
+    const opponent = await User.findByIdAndUpdate(
+      opts.opponent.userId,
+      {
+        $inc: { points: effectivePenalty, "stats.totalGames": 1 },
+      },
+      { new: true },
+    ).select("points");
+    opponentPoints = opponent?.points ?? null;
+  }
+
+  return {
+    penalty: effectivePenalty,
+    desertions: deserterUpdated?.stats.desertions ?? desertionNumber,
+    opponentPoints,
   };
 }
 
