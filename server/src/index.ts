@@ -11,7 +11,6 @@ import { leaderboardRoutes } from "./routes/leaderboard.js";
 import { chatRoutes } from "./routes/chat.js";
 import { registerLobbySocket } from "./sockets/lobby.js";
 
-// On crée d'abord le serveur HTTP nu, puis on le passe à Fastify
 const httpServer = createServer();
 
 const app = Fastify({
@@ -22,14 +21,12 @@ const app = Fastify({
   },
 });
 
-// Plugins
 await app.register(fastifyCors, {
   origin: config.clientUrl,
   credentials: true,
 });
 await app.register(fastifyJwt, { secret: config.jwtSecret });
 
-// Décorateur pour protéger les routes
 app.decorate("authenticate", async (request: any, reply: any) => {
   try {
     await request.jwtVerify();
@@ -38,23 +35,18 @@ app.decorate("authenticate", async (request: any, reply: any) => {
   }
 });
 
-// Routes REST
 await app.register(authRoutes);
 await app.register(shopRoutes);
 await app.register(statsRoutes);
 await app.register(leaderboardRoutes);
 await app.register(chatRoutes);
 
-// Health check
 app.get("/health", async () => ({ status: "ok" }));
 
-// Socket.IO attaché au même serveur HTTP
 const io = new Server(httpServer, {
   cors: { origin: config.clientUrl, methods: ["GET", "POST"] },
 });
 
-// Authentification obligatoire : le client envoie son JWT dans socket.handshake.auth.token.
-// L'identité (userId/username) est dérivée du token vérifié — jamais des payloads client.
 io.use((socket, next) => {
   try {
     const token = socket.handshake.auth?.token;
@@ -75,7 +67,6 @@ io.on("connection", (socket) => {
   registerLobbySocket(io, socket);
 });
 
-// Démarrage
 await connectDB();
 await app.ready();
 httpServer.listen(config.port, () => {

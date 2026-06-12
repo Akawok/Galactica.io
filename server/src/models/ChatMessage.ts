@@ -9,7 +9,7 @@ export interface IChatMessage extends Document {
 const ChatMessageSchema = new Schema<IChatMessage>({
   username: { type: String, required: true },
   message: { type: String, required: true, maxlength: 200 },
-  timestamp: { type: Date, default: Date.now, index: { expires: "24h" } }, // TTL 24h
+  timestamp: { type: Date, default: Date.now, index: { expires: "24h" } },
 });
 
 export const ChatMessage = mongoose.model<IChatMessage>(

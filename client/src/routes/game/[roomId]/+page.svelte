@@ -40,7 +40,6 @@
 			return;
 		}
 
-		// Détermine si spectateur via un flag posé par le lobby
 		const spectatorFlag = sessionStorage.getItem(`spectator_${roomId}`);
 		isSpectator = !!spectatorFlag;
 
@@ -48,8 +47,6 @@
 		engine = new GameEngine(socket, socket.id!, isSpectator);
 		await engine.init(canvas);
 
-		// Spectateur arrivé en cours de match : demande un snapshot complet au serveur
-		// (game:start n'est diffusé qu'au lancement de la partie).
 		if (isSpectator) {
 			socket.emit('game:spectateReady', { roomId });
 		}
@@ -78,11 +75,17 @@
 			}
 		);
 
-		socket.on('game:roundStart', (data: { scores: Record<string, number>; players: { id: string; x: number; y: number; angle: number; hp: number; energy: number }[] }) => {
-			engine?.resetRound(data.players);
-			status = 'playing';
-			roundResult = null;
-		});
+		socket.on(
+			'game:roundStart',
+			(data: {
+				scores: Record<string, number>;
+				players: { id: string; x: number; y: number; angle: number; hp: number; energy: number }[];
+			}) => {
+				engine?.resetRound(data.players);
+				status = 'playing';
+				roundResult = null;
+			}
+		);
 
 		socket.on(
 			'game:matchEnd',
@@ -135,7 +138,6 @@
 	onDestroy(() => {
 		engine?.destroy();
 		const socket = getSocket();
-		// Si la partie est encore en cours quand on quitte la page → abandon = défaite
 		if (status === 'playing' || status === 'roundEnd' || status === 'waiting') {
 			socket?.emit('game:leave', { roomId });
 		}

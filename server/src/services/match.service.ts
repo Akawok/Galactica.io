@@ -13,11 +13,6 @@ export interface MatchResult {
   galacticsGained: number;
 }
 
-/**
- * Met à jour les stats d'un gagnant et d'un perdant en parallèle.
- * Si `awardXP` est false (cas abandon : le perdant n'a pas combattu jusqu'au bout),
- * on n'octroie pas d'XP. Retourne un Map socketId → result quand l'XP est attribuée.
- */
 export async function recordMatchResult(opts: {
   winner: { socketId: string; userId: string };
   loser?: { socketId: string; userId: string };
@@ -47,15 +42,21 @@ export async function recordMatchResult(opts: {
   return results;
 }
 
-async function updateWinner(userId: string, awardXP: boolean): Promise<MatchResult | null> {
+async function updateWinner(
+  userId: string,
+  awardXP: boolean,
+): Promise<MatchResult | null> {
   const before = await User.findById(userId).select(
     "xp level stats.currentStreak stats.bestStreak",
   );
   if (!before) return null;
 
   const xpGained = awardXP ? GAME_CONFIG.XP_PER_WIN : 0;
-  const { level, xp, levelsGained } = applyXP(before.level, before.xp, xpGained);
-  // Les Galactics récompensent le passage de niveau, quelle que soit l'issue du match
+  const { level, xp, levelsGained } = applyXP(
+    before.level,
+    before.xp,
+    xpGained,
+  );
   const galacticsGained = levelsGained * GAME_CONFIG.GALACTICS_PER_LEVEL;
   const newStreak = (before.stats.currentStreak ?? 0) + 1;
   const newBest = Math.max(before.stats.bestStreak ?? 0, newStreak);
@@ -91,15 +92,20 @@ async function updateWinner(userId: string, awardXP: boolean): Promise<MatchResu
   };
 }
 
-async function updateLoser(userId: string, awardXP: boolean): Promise<MatchResult | null> {
+async function updateLoser(
+  userId: string,
+  awardXP: boolean,
+): Promise<MatchResult | null> {
   const before = await User.findById(userId).select("xp level");
   if (!before) return null;
 
   const xpGained = awardXP ? GAME_CONFIG.XP_PER_LOSS : 0;
-  const { level, xp, levelsGained } = applyXP(before.level, before.xp, xpGained);
+  const { level, xp, levelsGained } = applyXP(
+    before.level,
+    before.xp,
+    xpGained,
+  );
   const galacticsGained = levelsGained * GAME_CONFIG.GALACTICS_PER_LEVEL;
-  // Une défaite jouée jusqu'au bout rapporte quand même quelques crédits
-  // (awardXP=false sur abandon : le leaver ne touche rien).
   const creditsGained = awardXP ? GAME_CONFIG.CREDITS_PER_LOSS : 0;
 
   const updated = await User.findByIdAndUpdate(
@@ -129,18 +135,11 @@ async function updateLoser(userId: string, awardXP: boolean): Promise<MatchResul
 }
 
 export interface DesertionResult {
-  penalty: number; // crédits transférés du déserteur vers l'adversaire
-  desertions: number; // nouveau total de désertions du déserteur
-  opponentPoints: number | null; // nouveau solde de l'adversaire
+  penalty: number;
+  desertions: number;
+  opponentPoints: number | null;
 }
 
-/**
- * Sanctionne un abandon de partie en cours : le déserteur perd un pourcentage
- * croissant de ses crédits (5% × nº de désertion, plafonné à 50%), transféré
- * intégralement à l'adversaire. Le déserteur prend aussi une défaite et voit
- * sa série remise à zéro — sinon quitter protégerait le ratio V/D.
- * L'adversaire ne reçoit PAS de victoire : seulement les crédits.
- */
 export async function recordDesertion(opts: {
   deserter: { userId: string };
   opponent: { userId: string };
@@ -159,7 +158,6 @@ export async function recordDesertion(opts: {
   );
   const penalty = Math.max(0, Math.floor((deserterBefore.points ?? 0) * rate));
 
-  // $gte garantit qu'on ne passe jamais en négatif si le solde a bougé entre temps.
   const deserterUpdated = await User.findOneAndUpdate(
     { _id: opts.deserter.userId, points: { $gte: penalty } },
     {
@@ -174,7 +172,6 @@ export async function recordDesertion(opts: {
     { new: true },
   ).select("stats.desertions");
 
-  // Solde modifié concurremment : on inflige la sanction sans le débit de crédits.
   const effectivePenalty = deserterUpdated ? penalty : 0;
   if (!deserterUpdated) {
     await User.findByIdAndUpdate(opts.deserter.userId, {

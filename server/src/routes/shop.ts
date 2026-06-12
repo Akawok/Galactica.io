@@ -3,13 +3,11 @@ import { Item } from "../models/Item.js";
 import { User } from "../models/User.js";
 
 export async function shopRoutes(app: FastifyInstance) {
-  // Catalogue complet
   app.get("/shop/items", async (_req, reply) => {
     const items = await Item.find().lean();
     return reply.send({ items });
   });
 
-  // Inventaire du joueur connecté (items possédés + sélection active)
   app.get(
     "/shop/inventory",
     {
@@ -34,7 +32,6 @@ export async function shopRoutes(app: FastifyInstance) {
     },
   );
 
-  // Acheter un item
   app.post<{ Body: { itemId: string } }>(
     "/shop/buy",
     {
@@ -57,8 +54,6 @@ export async function shopRoutes(app: FastifyInstance) {
       if (!item) return reply.code(404).send({ error: "Item non trouvé" });
       const galacticsCost = item.priceGalactics ?? 0;
 
-      // Débit atomique des deux monnaies : les conditions $gte garantissent
-      // qu'on ne passe jamais en négatif même en cas d'achats concurrents.
       const updated = await User.findOneAndUpdate(
         {
           _id: id,
@@ -94,7 +89,6 @@ export async function shopRoutes(app: FastifyInstance) {
     },
   );
 
-  // Changer vaisseau/missile actif
   app.post<{
     Body: {
       type: "ship" | "bullet";
@@ -125,9 +119,9 @@ export async function shopRoutes(app: FastifyInstance) {
       if (!user)
         return reply.code(404).send({ error: "Utilisateur non trouvé" });
 
-      // L'item doit exister dans le catalogue et être possédé (ou gratuit) —
-      // sinon n'importe quel sprite arbitraire pourrait être équipé.
-      const item = await Item.findOne({ sprite, type }).select("price bulletRole").lean();
+      const item = await Item.findOne({ sprite, type })
+        .select("price bulletRole")
+        .lean();
       if (!item) return reply.code(404).send({ error: "Item non trouvé" });
       const owned =
         item.price === 0 ||
@@ -137,7 +131,6 @@ export async function shopRoutes(app: FastifyInstance) {
       if (type === "ship") {
         user.activeShip = sprite;
       } else if (type === "bullet") {
-        // Le rôle vient de l'item lui-même, pas du client
         const itemRole = item.bulletRole ?? role;
         if (itemRole === "secondary") user.activeBulletSecondary = sprite;
         else user.activeBullet = sprite;

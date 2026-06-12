@@ -14,7 +14,10 @@ import {
   resolveShipCollisions,
   getSpawnPosition,
 } from "../services/game.service.js";
-import { recordMatchResult, saveGameRecord } from "../services/match.service.js";
+import {
+  recordMatchResult,
+  saveGameRecord,
+} from "../services/match.service.js";
 import { rooms } from "./lobby.js";
 
 interface PlayerEntry {
@@ -37,16 +40,9 @@ interface ClientInput {
   rightClick: boolean;
 }
 
-// Anti speed-hack : le client envoie ses inputs à 60 Hz, le serveur tourne à 60 ticks/s.
-// Chaque tick crédite 1 input ; un petit burst est toléré pour absorber le jitter réseau,
-// mais un client modifié qui spamme des inputs ne peut PAS se déplacer plus vite
-// (le surplus est jeté, seuls les `credit` plus récents sont appliqués).
 const INPUT_BURST_MAX = 4;
-const MAX_QUEUE_LENGTH = 60; // garde-fou mémoire contre le spam brut
-
-// Sync des balles : leur trajectoire est linéaire, le client extrapole avec vx/vy.
-// On n'envoie une correction de position que tous les N ticks (bande passante ÷ N).
-const BULLET_SYNC_INTERVAL = 6; // ticks → correction toutes les ~100ms
+const MAX_QUEUE_LENGTH = 60;
+const BULLET_SYNC_INTERVAL = 6;
 
 const ALLOWED_KEYS = new Set(["z", "q", "s", "d", "w", "a"]);
 
@@ -55,8 +51,6 @@ const lastSeenSeq = new Map<string, number>();
 const lastProcessedSeq = new Map<string, number>();
 const inputCredits = new Map<string, number>();
 
-// Valide la forme d'un input client. Un payload malformé (keys non-tableau,
-// mouseAngle NaN…) ferait sinon planter le tick — donc tout le process Node.
 function sanitizeInput(raw: unknown): ClientInput | null {
   if (!raw || typeof raw !== "object") return null;
   const input = raw as Record<string, unknown>;
@@ -116,7 +110,6 @@ function buildStartPayload(room: RoomState) {
         angle,
         hp,
         energy,
-        // maxHp/maxEnergy pour les barres, speed pour la prédiction locale du joueur
         maxHp,
         maxEnergy,
         speed,
@@ -132,7 +125,6 @@ function buildStartPayload(room: RoomState) {
   };
 }
 
-// Snapshot complet pour un spectateur qui arrive en cours de match.
 export function sendGameSnapshot(socket: Socket, room: RoomState) {
   socket.emit("game:start", buildStartPayload(room));
   socket.emit("game:state", {
@@ -173,14 +165,13 @@ export function registerGameSocket(
   });
 
   for (const entry of entries) {
-    // Évite d'empiler un listener par match joué sur le même socket
     entry.socket.removeAllListeners("game:input");
     entry.socket.on("game:input", (raw: unknown) => {
       const input = sanitizeInput(raw);
       if (!input) return;
       const lastSeen = lastSeenSeq.get(entry.socket.id);
-      if (lastSeen === undefined) return; // partie terminée / état nettoyé
-      if (input.seq <= lastSeen) return; // doublon ou retard
+      if (lastSeen === undefined) return;
+      if (input.seq <= lastSeen) return;
       lastSeenSeq.set(entry.socket.id, input.seq);
       const queue = inputQueues.get(entry.socket.id);
       if (queue && queue.length < MAX_QUEUE_LENGTH) queue.push(input);
@@ -189,7 +180,6 @@ export function registerGameSocket(
 
   io.to(roomId).emit("game:navigate", { roomId });
 
-  // 500ms delay so clients have time to mount the game page before game:start arrives
   setTimeout(() => {
     io.to(roomId).emit("game:start", buildStartPayload(room));
   }, 500);
@@ -218,8 +208,6 @@ function makeTick(io: Server, roomId: string, room: RoomState) {
       );
 
       if (queue && queue.length > 0) {
-        // On n'applique que les `credit` inputs les plus récents : un client honnête
-        // en envoie ~1 par tick, un client qui spamme voit le surplus ignoré.
         const take = Math.min(queue.length, credit);
         const start = queue.length - take;
         for (let i = start; i < queue.length; i++) {
@@ -236,29 +224,30 @@ function makeTick(io: Server, roomId: string, room: RoomState) {
       }
       inputCredits.set(player.id, credit);
 
-      // Régénération d'énergie : par tick serveur, pas par input reçu
-      // (sinon spammer des inputs accélère la regen).
       player.energy = Math.min(
         player.maxEnergy,
         player.energy + GAME_CONFIG.ENERGY_REGEN,
       );
     }
 
-    // Les vaisseaux ne peuvent pas se chevaucher (collision sans dégâts)
     resolveShipCollisions(players);
 
     const removed = moveBullets(room.bullets);
     const hitRemoved = resolveCollisions(room.bullets, players);
     if (hitRemoved.length) removed.push(...hitRemoved);
 
-    // Correction de trajectoire périodique uniquement : le client extrapole via vx/vy
     const bulletsUpdated =
       tickNo % BULLET_SYNC_INTERVAL === 0
         ? room.bullets.map((b) => ({ id: b.id, x: b.x, y: b.y }))
         : [];
 
     const playerDeltas = buildPlayerDeltas(room, players);
-    if (playerDeltas.length || added.length || removed.length || bulletsUpdated.length) {
+    if (
+      playerDeltas.length ||
+      added.length ||
+      removed.length ||
+      bulletsUpdated.length
+    ) {
       io.to(roomId).emit("game:state", {
         players: playerDeltas,
         bulletsAdded: added,
@@ -311,23 +300,47 @@ interface PlayerDelta {
   lastProcessedSeq?: number;
 }
 
-function buildPlayerDeltas(room: RoomState, players: PlayerState[]): PlayerDelta[] {
+function buildPlayerDeltas(
+  room: RoomState,
+  players: PlayerState[],
+): PlayerDelta[] {
   if (!room.lastSent) room.lastSent = new Map();
   const deltas: PlayerDelta[] = [];
   for (const p of players) {
     const prev = room.lastSent.get(p.id);
     const delta: PlayerDelta = { id: p.id };
     let changed = false;
-    if (!prev || prev.x !== p.x) { delta.x = p.x; changed = true; }
-    if (!prev || prev.y !== p.y) { delta.y = p.y; changed = true; }
-    if (!prev || prev.angle !== p.angle) { delta.angle = p.angle; changed = true; }
-    if (!prev || prev.hp !== p.hp) { delta.hp = p.hp; changed = true; }
-    if (!prev || prev.energy !== p.energy) { delta.energy = p.energy; changed = true; }
+    if (!prev || prev.x !== p.x) {
+      delta.x = p.x;
+      changed = true;
+    }
+    if (!prev || prev.y !== p.y) {
+      delta.y = p.y;
+      changed = true;
+    }
+    if (!prev || prev.angle !== p.angle) {
+      delta.angle = p.angle;
+      changed = true;
+    }
+    if (!prev || prev.hp !== p.hp) {
+      delta.hp = p.hp;
+      changed = true;
+    }
+    if (!prev || prev.energy !== p.energy) {
+      delta.energy = p.energy;
+      changed = true;
+    }
     const seq = lastProcessedSeq.get(p.id) ?? 0;
     if (changed) {
       delta.lastProcessedSeq = seq;
       deltas.push(delta);
-      room.lastSent.set(p.id, { x: p.x, y: p.y, angle: p.angle, hp: p.hp, energy: p.energy });
+      room.lastSent.set(p.id, {
+        x: p.x,
+        y: p.y,
+        angle: p.angle,
+        hp: p.hp,
+        energy: p.energy,
+      });
     }
   }
   return deltas;
@@ -343,7 +356,7 @@ async function endRound(
   if (room.intervalId) clearInterval(room.intervalId);
 
   const alive = players.filter((p) => p.hp > 0);
-  const winner = alive.length === 1 ? alive[0] : null; // null = draw
+  const winner = alive.length === 1 ? alive[0] : null;
 
   if (winner) {
     room.scores.set(winner.id, (room.scores.get(winner.id) ?? 0) + 1);
@@ -375,7 +388,9 @@ async function endRound(
         lastProcessedSeq.set(socketId, 0);
         inputCredits.set(socketId, INPUT_BURST_MAX);
       }
-      const spawnStates = Array.from(room.players.values()).map(({ id, x, y, angle, hp, energy }) => ({ id, x, y, angle, hp, energy }));
+      const spawnStates = Array.from(room.players.values()).map(
+        ({ id, x, y, angle, hp, energy }) => ({ id, x, y, angle, hp, energy }),
+      );
       io.to(roomId).emit("game:roundStart", { scores, players: spawnStates });
       restartLoop(io, roomId, room);
     }, 3000);
@@ -455,8 +470,6 @@ async function endMatch(
       }
     }
   } finally {
-    // Nettoyage inconditionnel : même si le gagnant s'est déconnecté entre temps
-    // ou que la DB a échoué, la room ne doit pas fuiter en mémoire.
     for (const p of players) cleanupSocketInput(io, p.id);
     rooms.delete(roomId);
   }

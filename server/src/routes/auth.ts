@@ -2,7 +2,6 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { registerUser, loginUser } from "../services/auth.service.js";
 import { User, serializeUser } from "../models/User.js";
 
-// Rate-limit en mémoire contre le brute-force sur login/register : 10 tentatives/min par IP.
 const AUTH_MAX_ATTEMPTS = 10;
 const AUTH_WINDOW_MS = 60_000;
 const authAttempts = new Map<string, { count: number; resetAt: number }>();
@@ -93,7 +92,6 @@ export async function authRoutes(app: FastifyInstance) {
     },
   );
 
-  // Récupère le profil du joueur connecté
   app.get(
     "/auth/me",
     {

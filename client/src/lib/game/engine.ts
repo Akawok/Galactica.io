@@ -11,23 +11,15 @@ import {
 	type Ticker
 } from 'pixi.js';
 import { Starfield } from './starfield';
-import {
-	GAME_CONFIG,
-	applyMovement,
-	type PredictedInput,
-	type PredictedPlayer
-} from './physics';
+import { GAME_CONFIG, applyMovement, type PredictedInput, type PredictedPlayer } from './physics';
 import type { Socket } from 'socket.io-client';
 
-// Particules de propulseur : données pures, dessinées chaque frame dans UN SEUL
-// Graphics partagé (un objet Pixi par particule créait un churn d'allocations
-// qui faisait chuter les FPS).
 interface ThrusterParticle {
 	x: number;
 	y: number;
 	vx: number;
 	vy: number;
-	life: number; // en frames équivalentes 60 fps
+	life: number;
 	maxLife: number;
 	size: number;
 }
@@ -85,11 +77,9 @@ interface PlayerVisual {
 	targetY: number;
 	targetAngle: number;
 	isMoving: boolean;
-	thrustAcc: number; // accumulateur de spawn de particules (indépendant du framerate)
+	thrustAcc: number;
 }
 
-// Balles : simulation locale par vélocité (le serveur n'envoie qu'une correction
-// périodique). simX/simY est la position simulée, le visuel lerp dessus.
 interface BulletVisual {
 	visual: Sprite | Graphics;
 	simX: number;
@@ -98,14 +88,13 @@ interface BulletVisual {
 	vy: number;
 }
 
-// Sprites qui ont des frames d'animation : "spaceship-01" → ["spaceship-01-f1.png", ..., "spaceship-01-f4.png"]
 const ANIMATED_SPRITES: Record<string, string[]> = {
 	'spaceship-01': ['spaceship-01-f1', 'spaceship-01-f2', 'spaceship-01-f3', 'spaceship-01-f4'],
 	'spaceship-02': ['spaceship-02-f1', 'spaceship-02-f2', 'spaceship-02-f3', 'spaceship-02-f4'],
 	'spaceship-03': ['spaceship-03-f1', 'spaceship-03-f2', 'spaceship-03-f3', 'spaceship-03-f4'],
 	'spaceship-04': ['spaceship-04-f1', 'spaceship-04-f2', 'spaceship-04-f3', 'spaceship-04-f4'],
 	'spaceship-05': ['spaceship-05-f1', 'spaceship-05-f2', 'spaceship-05-f3', 'spaceship-05-f4'],
-	'spaceship-06': ['spaceship-06-f1', 'spaceship-06-f2', 'spaceship-06-f3', 'spaceship-06-f4'],
+	'spaceship-06': ['spaceship-06-f1', 'spaceship-06-f2', 'spaceship-06-f3', 'spaceship-06-f4']
 };
 
 function isAnimated(spriteName: string): spriteName is keyof typeof ANIMATED_SPRITES {
@@ -134,10 +123,8 @@ export class GameEngine {
 	private scoreText!: Text;
 	private hudContainer!: Container;
 
-	// Stored so they can be removed in destroy()
 	private onKeyDown = (e: KeyboardEvent) => this.keys.add(e.key.toLowerCase());
 	private onKeyUp = (e: KeyboardEvent) => this.keys.delete(e.key.toLowerCase());
-	// Si la fenêtre perd le focus, les keyup ne sont jamais reçus → touches "collées".
 	private onBlur = () => {
 		this.keys.clear();
 		this.leftClick = false;
@@ -183,8 +170,6 @@ export class GameEngine {
 			this.setupInputs(canvas);
 		}
 
-		// Toutes les mises à jour visuelles sont scalées par deltaTime (1 = frame à 60 fps)
-		// pour que le jeu se comporte pareil à 60, 120 ou 144 Hz.
 		this.app.ticker.add((ticker: Ticker) => {
 			const dt = ticker.deltaTime;
 			this.starfield.update(dt);
@@ -237,8 +222,6 @@ export class GameEngine {
 		canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 	}
 
-	// Positions serveur connues des autres vaisseaux — utilisées pour prédire
-	// la collision vaisseau-vaisseau (le serveur sépare, on anticipe la poussée).
 	private getBlockers(): { x: number; y: number }[] {
 		const blockers: { x: number; y: number }[] = [];
 		for (const [id, v] of this.playerVisuals) {
@@ -248,8 +231,6 @@ export class GameEngine {
 	}
 
 	private updateMouseAngle() {
-		// Position prédite plutôt que visuelle : l'angle reste exact même quand
-		// le vaisseau bouge alors que la souris est immobile.
 		if (this.hasPredictedState) {
 			this.mouseAngle = Math.atan2(
 				this.mouseWorldY - this.predicted.y,
@@ -266,7 +247,6 @@ export class GameEngine {
 
 	private sendInput() {
 		this.inputSeq++;
-		// Recalcule l'angle à chaque envoi : le vaisseau a pu bouger sans mousemove
 		this.updateMouseAngle();
 		const keys = Array.from(this.keys);
 		const input: PredictedInput = { keys, mouseAngle: this.mouseAngle };
@@ -282,7 +262,6 @@ export class GameEngine {
 		if (this.hasPredictedState) {
 			applyMovement(this.predicted, input, this.getBlockers());
 			this.pendingInputs.push({ seq: this.inputSeq, input });
-			// Garde-fou : si le serveur cesse d'acquitter (lag fort, déco), on ne laisse pas la queue exploser.
 			if (this.pendingInputs.length > GameEngine.MAX_PENDING_INPUTS) {
 				this.pendingInputs.splice(0, this.pendingInputs.length - GameEngine.MAX_PENDING_INPUTS);
 			}
@@ -290,10 +269,7 @@ export class GameEngine {
 	}
 
 	async onGameStart(payload: GameStartPayload) {
-		if (
-			payload.config.mapWidth !== this.mapWidth ||
-			payload.config.mapHeight !== this.mapHeight
-		) {
+		if (payload.config.mapWidth !== this.mapWidth || payload.config.mapHeight !== this.mapHeight) {
 			this.mapWidth = payload.config.mapWidth;
 			this.mapHeight = payload.config.mapHeight;
 			this.app.renderer.resize(this.mapWidth, this.mapHeight);
@@ -321,8 +297,6 @@ export class GameEngine {
 	}
 
 	private createShipSprite(spriteName: string, playerId: string): Sprite | AnimatedSprite {
-		// Les sprites sont dessinés nez vers le haut — on les pré-rotate de -90° pour que
-		// le nez pointe vers la droite (angle 0 dans le repère du moteur).
 		if (isAnimated(spriteName)) {
 			const frames = ANIMATED_SPRITES[spriteName].map((f) => {
 				const tex = Assets.get(`/assets/${f}.png`);
@@ -354,8 +328,6 @@ export class GameEngine {
 
 		const shipSprite = this.createShipSprite(p.sprite, p.id);
 
-		// Hitbox réelle (SHIP_RADIUS serveur) en cercle très fin — lisibilité des
-		// impacts et des collisions vaisseau-vaisseau.
 		const hitbox = new Graphics()
 			.circle(0, 0, GAME_CONFIG.SHIP_RADIUS)
 			.stroke({ width: 1, color: p.id === this.myId ? 0x4dd9ff : 0xff6b6b, alpha: 0.35 });
@@ -398,8 +370,6 @@ export class GameEngine {
 			this.predicted.x = p.x;
 			this.predicted.y = p.y;
 			this.predicted.angle = p.angle;
-			// Vitesse du vaisseau équipé : la prédiction doit utiliser la même
-			// valeur que la simulation serveur.
 			this.predicted.speed = p.speed ?? 3;
 			this.hasPredictedState = true;
 		}
@@ -442,13 +412,10 @@ export class GameEngine {
 				if (p.y !== undefined) visual.targetY = p.y;
 				if (p.angle !== undefined) visual.targetAngle = p.angle;
 				visual.isMoving =
-					Math.abs((p.x ?? prevX) - prevX) > 0.5 ||
-					Math.abs((p.y ?? prevY) - prevY) > 0.5;
+					Math.abs((p.x ?? prevX) - prevX) > 0.5 || Math.abs((p.y ?? prevY) - prevY) > 0.5;
 				this.setShipMoving(visual, visual.isMoving);
 			}
 
-			// HP / énergie : invariant — jamais prédits côté client (le serveur est seule source de vérité,
-			// sinon les barres "remontent" quand la prédiction et la collision serveur divergent).
 			if (p.hp !== undefined) visual.state.hp = p.hp;
 			if (p.energy !== undefined) visual.state.energy = p.energy;
 			if (p.hp !== undefined || p.energy !== undefined) this.updateBars(visual);
@@ -491,7 +458,6 @@ export class GameEngine {
 			});
 		}
 
-		// Corrections périodiques du serveur : on recale la simulation locale
 		if (state.bulletsUpdated) {
 			for (const u of state.bulletsUpdated) {
 				const entry = this.bulletVisuals.get(u.id);
@@ -510,7 +476,9 @@ export class GameEngine {
 		this.scoreText.text = parts.join('  —  ');
 	}
 
-	resetRound(players?: { id: string; x: number; y: number; angle: number; hp: number; energy: number }[]) {
+	resetRound(
+		players?: { id: string; x: number; y: number; angle: number; hp: number; energy: number }[]
+	) {
 		for (const entry of this.bulletVisuals.values()) entry.visual.destroy();
 		this.bulletVisuals.clear();
 		this.leftClick = false;
@@ -543,14 +511,11 @@ export class GameEngine {
 		}
 	}
 
-	// Facteur de lissage indépendant du framerate : équivaut à `base` par frame à 60 fps.
 	private static smoothing(base: number, dt: number): number {
 		return 1 - Math.pow(1 - base, dt);
 	}
 
 	private interpolateBullets(dt: number) {
-		// La vélocité serveur est exprimée en px/tick (60 ticks/s) et dt en frames
-		// équivalentes 60 fps → l'extrapolation locale colle à la simulation serveur.
 		const k = GameEngine.smoothing(0.35, dt);
 		for (const entry of this.bulletVisuals.values()) {
 			entry.simX += entry.vx * dt;
@@ -597,7 +562,6 @@ export class GameEngine {
 				px = this.predicted.x;
 				py = this.predicted.y;
 
-				// Sync animation pour le joueur local
 				this.setShipMoving(v, moving);
 			} else {
 				moving = v.isMoving;
@@ -606,8 +570,6 @@ export class GameEngine {
 				py = v.container.y;
 			}
 
-			// Pas de particules pour les sprites animés (ils ont déjà la flamme intégrée).
-			// Le spawn est accumulé en temps 60 fps pour ne pas dépendre du refresh écran.
 			if (!isAnimated(v.state.sprite) && moving) {
 				v.thrustAcc += dt;
 				while (v.thrustAcc >= 1) {
@@ -660,7 +622,6 @@ export class GameEngine {
 			v.container.x += (v.targetX - v.container.x) * k;
 			v.container.y += (v.targetY - v.container.y) * k;
 
-			// Interpoler l'angle logique (sans le -π/2 de base)
 			const targetRotation = v.targetAngle + Math.PI / 2;
 			let da = targetRotation - v.sprite.rotation;
 			while (da > Math.PI) da -= Math.PI * 2;

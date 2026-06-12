@@ -24,9 +24,8 @@ interface ConnectedPlayer {
 
 const CHAT_MIN_INTERVAL_MS = 750;
 
-// État global du lobby (en mémoire)
-const connectedPlayers = new Map<string, ConnectedPlayer>(); // socketId → player
-export const rooms = new Map<string, RoomState>(); // roomId → room
+const connectedPlayers = new Map<string, ConnectedPlayer>();
+export const rooms = new Map<string, RoomState>();
 
 let pendingBroadcast: NodeJS.Immediate | null = null;
 function broadcastLobbyState(io: Server) {
@@ -47,7 +46,6 @@ function doBroadcastLobbyState(io: Server) {
   );
 
   const roomList = Array.from(rooms.values()).map((r) => {
-    // En phase waiting, les joueurs sont dans waitingPlayers (pas encore dans room.players)
     const waitingUsernames = (r.waitingPlayers ?? [])
       .map((id) => connectedPlayers.get(id)?.username)
       .filter(Boolean) as string[];
@@ -77,7 +75,6 @@ async function handlePlayerLeave(io: Server, socketId: string, roomId: string) {
 
   const player = connectedPlayers.get(socketId);
 
-  // Cas 1 : le joueur était en attente (room pas encore lancée)
   if (room.status === "waiting") {
     const waitingPlayers = room.waitingPlayers ?? [];
     if (waitingPlayers.includes(socketId)) {
@@ -100,9 +97,6 @@ async function handlePlayerLeave(io: Server, socketId: string, roomId: string) {
     if (opponentEntry && leaverEntry) {
       const [opponentSocketId, opponent] = opponentEntry;
 
-      // Désertion : pénalité croissante de crédits transférée à l'adversaire.
-      // Pas de victoire comptée pour l'adversaire, pas d'XP pour personne ;
-      // le déserteur prend défaite + désertion + série remise à zéro.
       const desertion = await recordDesertion({
         deserter: { userId: leaverEntry.userId },
         opponent: { userId: opponent.userId },
@@ -146,9 +140,6 @@ async function handlePlayerLeave(io: Server, socketId: string, roomId: string) {
 }
 
 export function registerLobbySocket(io: Server, socket: Socket) {
-  // Enregistrement du joueur dans le lobby. L'identité vient du JWT vérifié au
-  // handshake (socket.data) et le loadout de la DB — on n'accepte RIEN du client
-  // ici, sinon n'importe qui pourrait usurper un compte ou équiper des items non possédés.
   socket.on("user:join", async () => {
     const userId = socket.data.userId as string | undefined;
     if (!userId) return;
@@ -172,7 +163,6 @@ export function registerLobbySocket(io: Server, socket: Socket) {
     }
   });
 
-  // Créer une nouvelle room
   socket.on("game:create", () => {
     const player = connectedPlayers.get(socket.id);
     if (!player || player.status !== "idle") return;
@@ -188,7 +178,6 @@ export function registerLobbySocket(io: Server, socket: Socket) {
       roundStartTime: 0,
     };
 
-    // Stocke le créateur comme participant en attente
     room.waitingPlayers = [socket.id];
 
     rooms.set(roomId, room);
@@ -200,7 +189,6 @@ export function registerLobbySocket(io: Server, socket: Socket) {
     broadcastLobbyState(io);
   });
 
-  // Annuler une room en attente
   socket.on("game:cancel", (data: { roomId?: string }) => {
     if (typeof data?.roomId !== "string") return;
     const player = connectedPlayers.get(socket.id);
@@ -215,7 +203,6 @@ export function registerLobbySocket(io: Server, socket: Socket) {
     broadcastLobbyState(io);
   });
 
-  // Rejoindre une room existante
   socket.on("game:join", async (data: { roomId?: string }) => {
     if (typeof data?.roomId !== "string") return;
     const roomId = data.roomId;
@@ -226,8 +213,6 @@ export function registerLobbySocket(io: Server, socket: Socket) {
     const waitingPlayers = room.waitingPlayers ?? [];
     if (room.status !== "waiting" || waitingPlayers.length >= 2) return;
 
-    // Réserve la place de façon SYNCHRONE : le chargement des stats ci-dessous
-    // est async, sans ça deux joueurs pourraient rejoindre la même room.
     waitingPlayers.push(socket.id);
     room.waitingPlayers = waitingPlayers;
     socket.join(roomId);
@@ -248,12 +233,10 @@ export function registerLobbySocket(io: Server, socket: Socket) {
     const player1 = connectedPlayers.get(player1SocketId);
 
     if (!player1Socket || !player1) {
-      // Le créateur s'est déconnecté entre temps
       abortJoin("Le créateur de la partie s'est déconnecté");
       return;
     }
 
-    // Stats effectives des deux loadouts, lues en DB (jamais fournies par le client)
     let stats1, stats2;
     try {
       [stats1, stats2] = await Promise.all([
@@ -274,13 +257,11 @@ export function registerLobbySocket(io: Server, socket: Socket) {
       return;
     }
 
-    // La room a pu disparaître pendant l'await (déco du créateur)
     if (!rooms.has(roomId) || room.status !== "waiting") {
       abortJoin("La partie n'est plus disponible");
       return;
     }
 
-    // Démarre la partie avec les 2 joueurs
     registerGameSocket(io, roomId, room, [
       { socket: player1Socket, player: { ...player1, stats: stats1 } },
       { socket, player: { ...player, stats: stats2 } },
@@ -289,7 +270,6 @@ export function registerLobbySocket(io: Server, socket: Socket) {
     broadcastLobbyState(io);
   });
 
-  // Rejoindre en spectateur
   socket.on("game:spectate", (data: { roomId?: string }) => {
     if (typeof data?.roomId !== "string") return;
     const player = connectedPlayers.get(socket.id);
@@ -305,9 +285,6 @@ export function registerLobbySocket(io: Server, socket: Socket) {
     broadcastLobbyState(io);
   });
 
-  // Le spectateur a monté la page de jeu : s'il arrive en cours de match,
-  // on lui envoie un snapshot complet (sinon il resterait sur un écran vide
-  // car game:start n'est diffusé qu'au lancement de la partie).
   socket.on("game:spectateReady", (data: { roomId?: string }) => {
     if (typeof data?.roomId !== "string") return;
     const room = rooms.get(data.roomId);
@@ -316,7 +293,6 @@ export function registerLobbySocket(io: Server, socket: Socket) {
     sendGameSnapshot(socket, room);
   });
 
-  // Abandon volontaire d'une partie en cours (navigation hors de la page game)
   socket.on("game:leave", (data: { roomId?: string }) => {
     if (typeof data?.roomId !== "string") return;
     handlePlayerLeave(io, socket.id, data.roomId).catch((err) =>
@@ -324,7 +300,6 @@ export function registerLobbySocket(io: Server, socket: Socket) {
     );
   });
 
-  // Déconnexion
   socket.on("disconnect", () => {
     const player = connectedPlayers.get(socket.id);
     if (player) {
@@ -337,8 +312,6 @@ export function registerLobbySocket(io: Server, socket: Socket) {
     broadcastLobbyState(io);
   });
 
-  // Le loadout actif est relu depuis la DB (mis à jour par /shop/equip qui, lui,
-  // vérifie la possession) — on ne fait pas confiance au payload du client.
   socket.on("user:updateLoadout", async () => {
     const player = connectedPlayers.get(socket.id);
     if (!player) return;
@@ -362,11 +335,11 @@ export function registerLobbySocket(io: Server, socket: Socket) {
       return;
 
     const now = Date.now();
-    if (player.lastChatAt && now - player.lastChatAt < CHAT_MIN_INTERVAL_MS) return;
+    if (player.lastChatAt && now - player.lastChatAt < CHAT_MIN_INTERVAL_MS)
+      return;
     player.lastChatAt = now;
 
     const sanitized = data.message.trim().slice(0, 200);
-    // TTL 24h géré côté MongoDB
     ChatMessage.create({
       username: player.username,
       message: sanitized,

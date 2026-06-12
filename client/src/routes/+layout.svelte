@@ -14,15 +14,12 @@
 
 	const PUBLIC_ROUTES = ['/login', '/register'];
 
-	// Re-fetch le profil depuis la DB au chargement pour écraser le cache localStorage
 	onMount(async () => {
 		if (!$token) return;
 		try {
 			const { user } = await api.auth.me();
 			auth.updateUser(user);
-		} catch {
-			// token expiré ou invalide → laisser le $effect gérer la redirection
-		}
+		} catch {}
 	});
 
 	$effect(() => {
@@ -31,14 +28,13 @@
 		}
 	});
 
-	// Initialise le listener chat une seule fois pour toute la session
 	$effect(() => {
 		if (!$isAuthenticated) return;
 		const { token } = $page.data ?? {};
 		import('$lib/stores/socket').then(({ getSocket }) => {
 			const socket = getSocket();
 			if (!socket) return;
-			socket.off('chat:message'); // évite les doublons
+			socket.off('chat:message');
 			socket.on('chat:message', addMessage);
 		});
 	});
@@ -68,15 +64,30 @@
 				<div class="nav-sep"></div>
 			{/if}
 			<div class="nav-credits">
-				<span class="nav-credit-item"><span class="nav-credit-icon">⭐</span>{($currentUser?.points ?? 0).toLocaleString('fr-FR')} Crédits</span>
+				<span class="nav-credit-item"
+					><span class="nav-credit-icon">⭐</span>{($currentUser?.points ?? 0).toLocaleString(
+						'fr-FR'
+					)} Crédits</span
+				>
 				<span class="nav-credit-sep">·</span>
-				<span class="nav-credit-item nav-galactics"><Gem size={13} />{($currentUser?.galactics ?? 0).toLocaleString('fr-FR')} Galactics</span>
+				<span class="nav-credit-item nav-galactics"
+					><Gem size={13} />{($currentUser?.galactics ?? 0).toLocaleString('fr-FR')} Galactics</span
+				>
 			</div>
 			<button class="logout-btn" onclick={logout} title="Déconnexion">
-				<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-					<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
-					<polyline points="16 17 21 12 16 7"/>
-					<line x1="21" y1="12" x2="9" y2="12"/>
+				<svg
+					width="18"
+					height="18"
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					stroke-width="2"
+					stroke-linecap="round"
+					stroke-linejoin="round"
+				>
+					<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+					<polyline points="16 17 21 12 16 7" />
+					<line x1="21" y1="12" x2="9" y2="12" />
 				</svg>
 			</button>
 		</div>
@@ -241,7 +252,6 @@
 	.nav-credit-icon {
 		font-size: 0.9rem;
 	}
-	/* Galactics : même icône (Gem) et même couleur que dans le Shop */
 	.nav-credit-item.nav-galactics {
 		color: #c4b5fd;
 	}
@@ -264,7 +274,10 @@
 		border-radius: 8px;
 		color: #ff6b6b;
 		cursor: pointer;
-		transition: background 0.2s, border-color 0.2s, color 0.2s;
+		transition:
+			background 0.2s,
+			border-color 0.2s,
+			color 0.2s;
 		flex-shrink: 0;
 	}
 	.logout-btn:hover {

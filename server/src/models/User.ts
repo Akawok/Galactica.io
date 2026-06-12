@@ -5,20 +5,20 @@ export interface IUser extends Document {
   email: string;
   passwordHash: string;
   points: number;
-  galactics: number; // monnaie de niveau : +1 à chaque passage de niveau
+  galactics: number;
   xp: number;
   level: number;
   inventory: mongoose.Types.ObjectId[];
   activeShip: string;
-  activeBullet: string; // tir principal (clic gauche)
-  activeBulletSecondary: string; // tir secondaire (clic droit)
+  activeBullet: string;
+  activeBulletSecondary: string;
   stats: {
     wins: number;
     losses: number;
     totalGames: number;
     currentStreak: number;
     bestStreak: number;
-    desertions: number; // abandons de partie en cours — public au classement
+    desertions: number;
   };
   createdAt: Date;
 }

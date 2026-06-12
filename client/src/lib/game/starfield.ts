@@ -20,7 +20,6 @@ export class Starfield {
 		this.width = width;
 		this.height = height;
 
-		// 3 couches de profondeur
 		const layerConfigs = [
 			{ count: 80, speedRange: [0.1, 0.3], sizeRange: [0.5, 1], alphaRange: [0.3, 0.5] },
 			{ count: 50, speedRange: [0.3, 0.6], sizeRange: [1, 1.5], alphaRange: [0.5, 0.7] },
@@ -53,8 +52,6 @@ export class Starfield {
 		app.stage.addChildAt(this.container, 0);
 	}
 
-	// dt en frames équivalentes 60 fps — garde une vitesse de défilement
-	// identique quel que soit le taux de rafraîchissement de l'écran.
 	update(dt: number = 1) {
 		for (const layer of this.layers) {
 			for (const star of layer) {

@@ -6,7 +6,6 @@ export interface ChatMessage {
 	timestamp: number;
 }
 
-// Store global — persiste pendant toute la session (navigation entre pages)
 export const chatMessages = writable<ChatMessage[]>([]);
 
 export function addMessage(msg: ChatMessage) {

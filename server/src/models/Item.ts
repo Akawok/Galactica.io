@@ -6,9 +6,9 @@ export type BulletRole = "primary" | "secondary";
 export interface IItem extends Document {
   name: string;
   type: ItemType;
-  bulletRole?: BulletRole; // uniquement pour les bullets
-  price: number; // en Crédits
-  priceGalactics: number; // coût additionnel en Galactics (barrière de progression)
+  bulletRole?: BulletRole;
+  price: number;
+  priceGalactics: number;
   description: string;
   sprite: string;
   stats: {

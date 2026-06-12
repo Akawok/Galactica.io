@@ -1,6 +1,3 @@
-// Mirror exact des constantes serveur (server/src/services/game.service.ts).
-// Si tu changes une valeur côté serveur, change-la ici aussi — sinon la prédiction
-// client divergera de la simulation autoritaire et provoquera du rubber-banding.
 export const GAME_CONFIG = {
 	MAP_WIDTH: 1280,
 	MAP_HEIGHT: 720,
@@ -15,8 +12,6 @@ export interface PredictedPlayer {
 	x: number;
 	y: number;
 	angle: number;
-	// Vitesse du vaisseau équipé, fournie par le serveur dans game:start.
-	// Doit matcher la stat serveur sinon la prédiction rubber-band.
 	speed: number;
 }
 
@@ -25,10 +20,6 @@ export interface PredictedInput {
 	mouseAngle: number;
 }
 
-// Mirror du mouvement serveur. On ne prédit QUE x/y/angle — pas hp/energy/tirs.
-// `blockers` = positions des autres vaisseaux : le serveur sépare les vaisseaux
-// qui se chevauchent (collision sans dégâts), on prédit ici la même poussée
-// (moitié de la pénétration, comme côté serveur) pour éviter le rubber-banding.
 export function applyMovement(
 	player: PredictedPlayer,
 	input: PredictedInput,

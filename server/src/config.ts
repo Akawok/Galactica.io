@@ -5,7 +5,6 @@ import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// Charge le .env manuellement (pas de dotenv pour rester léger)
 function loadEnv() {
   try {
     const envPath = resolve(__dirname, "../../.env");
@@ -14,9 +13,7 @@ function loadEnv() {
       const [key, ...vals] = line.split("=");
       if (key && vals.length) process.env[key.trim()] = vals.join("=").trim();
     }
-  } catch {
-    // En prod, les variables sont déjà injectées
-  }
+  } catch {}
 }
 
 loadEnv();

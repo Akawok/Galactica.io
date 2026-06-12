@@ -85,12 +85,18 @@
 		[...leaderboard].sort((a, b) => {
 			if (lbSort === 'wins') return b.stats.wins - a.stats.wins;
 			if (lbSort === 'losses') return b.stats.losses - a.stats.losses;
-			if (lbSort === 'desertions')
-				return (b.stats.desertions ?? 0) - (a.stats.desertions ?? 0);
+			if (lbSort === 'desertions') return (b.stats.desertions ?? 0) - (a.stats.desertions ?? 0);
 			return (b.level ?? 1) - (a.level ?? 1);
 		})
 	);
-	const ANIMATED_SPRITES = ['spaceship-01', 'spaceship-02', 'spaceship-03', 'spaceship-04', 'spaceship-05', 'spaceship-06'];
+	const ANIMATED_SPRITES = [
+		'spaceship-01',
+		'spaceship-02',
+		'spaceship-03',
+		'spaceship-04',
+		'spaceship-05',
+		'spaceship-06'
+	];
 	function shipPreviewSrc(sprite: string | undefined): string {
 		const s = sprite ?? 'spaceship-01';
 		return ANIMATED_SPRITES.includes(s) ? `/assets/${s}-f1.png` : `/assets/${s}.png`;
@@ -195,8 +201,6 @@
 				});
 		}
 
-		// L'identité et le loadout sont résolus côté serveur à partir du JWT
-		// du handshake — aucun payload n'est accepté (anti-usurpation).
 		socket.emit(LOBBY_EVENT.USER_JOIN);
 
 		socket.on(LOBBY_EVENT.STATE, (data: { players: Player[]; rooms: Room[] }) => {
@@ -265,7 +269,6 @@
 				activeBullet: result.activeBullet,
 				activeBulletSecondary: result.activeBulletSecondary
 			});
-			// Notifie simplement le serveur, qui relit le loadout depuis la DB
 			socket?.emit('user:updateLoadout');
 		} finally {
 			equipLoading = null;
@@ -826,7 +829,6 @@
 {/if}
 
 <style>
-	/* ====== Galaxy background ====== */
 	.hub-bg {
 		position: fixed;
 		inset: 0;
@@ -902,13 +904,11 @@
 		background: linear-gradient(90deg, #7b3ff5, #4dd9ff);
 	}
 
-	/* Bloquer le scroll sur la page hub */
 	:global(body):has(.hub) {
 		overflow: hidden;
 		height: 100vh;
 	}
 
-	/* ====== Layout ====== */
 	.hub {
 		display: grid;
 		grid-template-columns: 300px 1fr 300px;
@@ -923,7 +923,6 @@
 		overflow: hidden;
 	}
 
-	/* ====== Panels ====== */
 	.panel {
 		background: rgba(10, 14, 36, 0.78);
 		border: 1px solid rgba(77, 217, 255, 0.18);
@@ -977,7 +976,6 @@
 		margin-bottom: 0;
 	}
 
-	/* ====== Left col : Loadout ====== */
 	.left-col {
 		display: flex;
 		flex-direction: column;
@@ -1059,7 +1057,6 @@
 		text-align: center;
 	}
 
-	/* ====== Onglets gauche (Armement / Shop) ====== */
 	.left-tabs {
 		display: flex;
 		gap: 0;
@@ -1093,7 +1090,6 @@
 		border-bottom-color: #4dd9ff;
 	}
 
-	/* ====== Shop inline ====== */
 	.shop-tabs {
 		display: flex;
 		gap: 0.4rem;
@@ -1119,8 +1115,7 @@
 		color: #a0b0d0;
 		border-color: rgba(77, 217, 255, 0.3);
 	}
-	/* L'onglet actif prend la couleur d'accent de sa catégorie (--accent inline),
-	   la même que l'icône de section correspondante dans Armement. */
+
 	.shop-stab.active {
 		color: var(--accent, #4dd9ff);
 		border-color: var(--accent, #4dd9ff);
@@ -1224,7 +1219,6 @@
 		flex-shrink: 0;
 	}
 
-	/* ====== Center col ====== */
 	.center-col {
 		display: flex;
 		flex-direction: column;
@@ -1383,7 +1377,6 @@
 		align-items: center;
 	}
 
-	/* ====== Chat 3 colonnes ====== */
 	.chat-panel {
 		flex: 1;
 		min-height: 160px;
@@ -1613,7 +1606,6 @@
 		background: #ff9800;
 	}
 
-	/* ====== Right col ====== */
 	.right-col {
 		display: flex;
 		flex-direction: column;
@@ -1638,7 +1630,6 @@
 		scrollbar-color: rgba(77, 217, 255, 0.15) transparent;
 	}
 
-	/* Mega Ring */
 	.mega-ring-wrap {
 		position: absolute;
 		top: 0;
@@ -1774,7 +1765,6 @@
 		color: #ffd700;
 	}
 
-	/* Radar */
 	.radar-panel {
 		padding-bottom: 0.5rem;
 	}
@@ -1794,7 +1784,6 @@
 		font-weight: 600;
 	}
 
-	/* Stats */
 	.stat-rows {
 		display: flex;
 		flex-direction: column;
@@ -1844,7 +1833,6 @@
 		background: rgba(8, 8, 28, 0.85);
 	}
 
-	/* ====== Classement ====== */
 	.lb-panel {
 		display: flex;
 		flex-direction: column;
@@ -1928,7 +1916,6 @@
 		color: #ff6b6b;
 	}
 
-	/* ====== Buttons ====== */
 	.btn-sm {
 		padding: 0.3rem 0.65rem !important;
 		font-size: 0.78rem !important;

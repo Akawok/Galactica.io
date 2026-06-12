@@ -5,11 +5,6 @@ import mongoose from "mongoose";
 
 await connectDB();
 
-// Équilibrage « net » : un vaisseau haut de gamme vaut ≈ +30 % de puissance
-// effective face au vaisseau de base — avantage réel mais rattrapable au skill.
-// Budget de stats croissant avec le prix, profils différenciés par archétype.
-// La vitesse est plafonnée à +20 % (stat dominante pour l'esquive).
-// Base : HP 100 / vitesse 3.0 / énergie 100 (= clamps GAME_CONFIG côté moteur).
 const defaultItems = [
   {
     name: "Intercepteur",
@@ -92,7 +87,6 @@ await Promise.all(
   }),
 );
 
-// Donne les items gratuits à tous les utilisateurs qui ne les ont pas encore
 const freeItems = await Item.find({ price: 0 }).select("_id");
 const freeIds = freeItems.map((i) => i._id);
 
