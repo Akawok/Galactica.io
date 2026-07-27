@@ -108,6 +108,7 @@
 	let hoveredItem = $state<InventoryItem | null>(null);
 	let popoverX = $state(0);
 	let popoverY = $state(0);
+	let loadoutError = $state<string | null>(null);
 
 	function showPopover(e: MouseEvent, item: InventoryItem) {
 		const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -139,11 +140,14 @@
 	async function buyItem(item: InventoryItem) {
 		if (buyLoading) return;
 		buyLoading = item._id;
+		loadoutError = null;
 		try {
 			const { points, galactics } = await api.shop.buy(item._id);
 			auth.updateUser({ points, galactics });
 			ownedIds = new Set([...ownedIds, String(item._id)]);
 			inventory = [...inventory, item];
+		} catch (e) {
+			loadoutError = e instanceof Error ? e.message : 'Achat impossible';
 		} finally {
 			buyLoading = null;
 		}
@@ -258,6 +262,7 @@
 	async function equipItem(item: InventoryItem) {
 		if (equipLoading) return;
 		equipLoading = item._id;
+		loadoutError = null;
 		try {
 			const type = item.type as 'ship' | 'bullet';
 			const role = item.bulletRole as 'primary' | 'secondary' | undefined;
@@ -268,6 +273,8 @@
 				activeBulletSecondary: result.activeBulletSecondary
 			});
 			socket?.emit('user:updateLoadout');
+		} catch (e) {
+			loadoutError = e instanceof Error ? e.message : 'Équipement impossible';
 		} finally {
 			equipLoading = null;
 		}
@@ -367,6 +374,10 @@
 					<ShoppingCart size={14} /> Shop
 				</button>
 			</div>
+
+			{#if loadoutError}
+				<p class="loadout-error" role="alert">{loadoutError}</p>
+			{/if}
 
 			{#if leftTab === 'armement'}
 				<LoadoutRow
@@ -1588,6 +1599,15 @@
 		font-size: 0.75rem;
 		text-align: center;
 		padding: 0.4rem 0;
+	}
+
+	.loadout-error {
+		font-size: 0.75rem;
+		color: #ff5566;
+		background: rgba(255, 85, 102, 0.08);
+		border: 1px solid rgba(255, 85, 102, 0.25);
+		border-radius: 6px;
+		padding: 0.35rem 0.5rem;
 	}
 
 	.dot {
