@@ -1,9 +1,17 @@
 import mongoose, { Schema, Document } from "mongoose";
 
+export type UserRole = "user" | "moderator" | "admin";
+
 export interface IUser extends Document {
   username: string;
+  usernameCanonical: string;
   email: string;
   passwordHash: string;
+  role: UserRole;
+  tokenVersion: number;
+  bannedUntil?: Date | null;
+  banReason?: string | null;
+  mutedUntil?: Date | null;
   points: number;
   galactics: number;
   xp: number;
@@ -25,6 +33,12 @@ export interface IUser extends Document {
 
 const UserSchema = new Schema<IUser>({
   username: { type: String, required: true, unique: true, trim: true },
+  usernameCanonical: {
+    type: String,
+    required: true,
+    unique: true,
+    index: true,
+  },
   email: {
     type: String,
     required: true,
@@ -32,7 +46,16 @@ const UserSchema = new Schema<IUser>({
     lowercase: true,
     trim: true,
   },
-  passwordHash: { type: String, required: true },
+  passwordHash: { type: String, required: true, select: false },
+  role: {
+    type: String,
+    enum: ["user", "moderator", "admin"],
+    default: "user",
+  },
+  tokenVersion: { type: Number, default: 0 },
+  bannedUntil: { type: Date, default: null },
+  banReason: { type: String, default: null },
+  mutedUntil: { type: Date, default: null },
   points: { type: Number, default: 0 },
   galactics: { type: Number, default: 0 },
   xp: { type: Number, default: 0 },
@@ -58,6 +81,7 @@ export function serializeUser(user: IUser) {
   return {
     id: user._id.toString(),
     username: user.username,
+    role: user.role ?? "user",
     points: user.points,
     galactics: user.galactics ?? 0,
     xp: user.xp ?? 0,
@@ -66,6 +90,14 @@ export function serializeUser(user: IUser) {
     activeBullet: user.activeBullet,
     activeBulletSecondary: user.activeBulletSecondary ?? "bullet1",
   };
+}
+
+export function isBanned(user: Pick<IUser, "bannedUntil">): boolean {
+  return !!user.bannedUntil && user.bannedUntil.getTime() > Date.now();
+}
+
+export function isMuted(user: Pick<IUser, "mutedUntil">): boolean {
+  return !!user.mutedUntil && user.mutedUntil.getTime() > Date.now();
 }
 
 export function serializeUserFull(user: IUser & { inventory?: unknown[] }) {

@@ -1,71 +1,186 @@
 import Fastify from "fastify";
 import fastifyJwt from "@fastify/jwt";
 import fastifyCors from "@fastify/cors";
+import fastifyHelmet from "@fastify/helmet";
+import fastifyRateLimit from "@fastify/rate-limit";
 import { createServer } from "http";
 import { Server } from "socket.io";
-import { config, connectDB } from "./config.js";
+import { config, isProduction, connectDB } from "./config.js";
 import { authRoutes } from "./routes/auth.js";
 import { shopRoutes } from "./routes/shop.js";
 import { statsRoutes } from "./routes/stats.js";
 import { leaderboardRoutes } from "./routes/leaderboard.js";
 import { chatRoutes } from "./routes/chat.js";
+import { adminRoutes } from "./routes/admin.js";
 import { registerLobbySocket } from "./sockets/lobby.js";
+import { bindIO } from "./sockets/registry.js";
+import {
+  AUTH_FAILURE_MESSAGE,
+  authorizeToken,
+  hasRole,
+} from "./services/access.service.js";
+import type { UserRole } from "./models/User.js";
+import { pruneLoginAttempts } from "./services/auth.service.js";
 
 const httpServer = createServer();
 
 const app = Fastify({
-  logger: true,
+  trustProxy: isProduction,
+  bodyLimit: 64 * 1024,
+  ajv: { customOptions: { removeAdditional: false, allErrors: false } },
+  logger: {
+    level: isProduction ? "info" : "debug",
+    redact: {
+      paths: [
+        "req.headers.authorization",
+        "req.headers.cookie",
+        "req.body.password",
+        "req.body.email",
+        "res.headers['set-cookie']",
+      ],
+      censor: "[redacted]",
+    },
+  },
   serverFactory: (handler) => {
     httpServer.on("request", handler);
     return httpServer;
   },
 });
 
+await app.register(fastifyHelmet, {
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", "data:", "blob:"],
+      connectSrc: ["'self'", config.clientUrl],
+      objectSrc: ["'none'"],
+      frameAncestors: ["'none'"],
+      baseUri: ["'self'"],
+      formAction: ["'self'"],
+    },
+  },
+  crossOriginResourcePolicy: { policy: "same-site" },
+  hsts: isProduction
+    ? { maxAge: 31_536_000, includeSubDomains: true, preload: true }
+    : false,
+});
+
 await app.register(fastifyCors, {
   origin: config.clientUrl,
   credentials: true,
+  methods: ["GET", "POST", "PATCH"],
 });
-await app.register(fastifyJwt, { secret: config.jwtSecret });
+
+await app.register(fastifyRateLimit, {
+  global: true,
+  max: 300,
+  timeWindow: "1 minute",
+  keyGenerator: (req) => req.account?.id ?? req.ip,
+  allowList: (req) => req.url === "/health",
+  errorResponseBuilder: (_req, context) => ({
+    statusCode: 429,
+    error: "Too Many Requests",
+    message: `Trop de requêtes, réessaie dans ${context.after}`,
+  }),
+});
+
+await app.register(fastifyJwt, {
+  secret: config.jwtSecret,
+  sign: { algorithm: "HS256" },
+  verify: { algorithms: ["HS256"] },
+});
 
 app.decorate("authenticate", async (request: any, reply: any) => {
   try {
     await request.jwtVerify();
   } catch {
-    reply.code(401).send({ error: "Non autorisé" });
+    return reply.code(401).send({ error: "Non autorisé" });
   }
+
+  const result = await authorizeToken(request.user);
+  if ("failure" in result) {
+    const code = result.failure === "banned" ? 403 : 401;
+    return reply
+      .code(code)
+      .send({ error: AUTH_FAILURE_MESSAGE[result.failure] });
+  }
+  request.account = result.account;
 });
+
+app.decorate(
+  "requireRole",
+  (role: UserRole) => async (request: any, reply: any) => {
+    const account = request.account;
+    if (!account || !hasRole(account.role, role)) {
+      return reply.code(403).send({ error: "Accès refusé" });
+    }
+  },
+);
+
+app.setErrorHandler((err, req, reply) => {
+  const status = err.statusCode ?? 500;
+  if (status >= 500) {
+    req.log.error({ err }, "unhandled error");
+    return reply.code(500).send({ error: "Erreur serveur" });
+  }
+  if (status === 429) {
+    return reply.code(429).send({
+      error: "Trop de requêtes, réessaie dans un instant",
+    });
+  }
+  return reply.code(status).send({ error: err.message ?? "Requête invalide" });
+});
+
+app.setNotFoundHandler((_req, reply) =>
+  reply.code(404).send({ error: "Ressource introuvable" }),
+);
 
 await app.register(authRoutes);
 await app.register(shopRoutes);
 await app.register(statsRoutes);
 await app.register(leaderboardRoutes);
 await app.register(chatRoutes);
+await app.register(adminRoutes);
 
 app.get("/health", async () => ({ status: "ok" }));
 
 const io = new Server(httpServer, {
   cors: { origin: config.clientUrl, methods: ["GET", "POST"] },
+  maxHttpBufferSize: 8 * 1024,
+  pingTimeout: 20_000,
 });
 
-io.use((socket, next) => {
+io.use(async (socket, next) => {
   try {
     const token = socket.handshake.auth?.token;
     if (typeof token !== "string" || !token) {
       return next(new Error("Authentification requise"));
     }
-    const payload = app.jwt.verify<{ id: string; username: string }>(token);
-    socket.data.userId = payload.id;
-    socket.data.username = payload.username;
+
+    const payload = app.jwt.verify(token);
+    const result = await authorizeToken(payload);
+    if ("failure" in result) {
+      return next(new Error(AUTH_FAILURE_MESSAGE[result.failure]));
+    }
+
+    socket.data.userId = result.account.id;
+    socket.data.username = result.account.username;
+    socket.data.role = result.account.role;
     next();
   } catch {
     next(new Error("Token invalide"));
   }
 });
 
+bindIO(io);
+
 io.on("connection", (socket) => {
-  app.log.info(`Socket connecté : ${socket.id}`);
   registerLobbySocket(io, socket);
 });
+
+setInterval(pruneLoginAttempts, 5 * 60_000).unref();
 
 await connectDB();
 await app.ready();

@@ -14,9 +14,20 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 	if (token) headers['Authorization'] = `Bearer ${token}`;
 
 	const res = await fetch(`${BASE_URL}${path}`, { ...options, headers });
-	const data = await res.json();
 
-	if (!res.ok) throw new Error(data.error ?? 'Erreur serveur');
+	let data: any = null;
+	try {
+		data = await res.json();
+	} catch {
+		data = null;
+	}
+
+	if (!res.ok) {
+		if ((res.status === 401 || res.status === 403) && token) {
+			auth.logout();
+		}
+		throw new Error(data?.error ?? 'Erreur serveur');
+	}
 	return data as T;
 }
 

@@ -154,6 +154,8 @@ export interface RoomState {
   spectators: Set<string>;
   status: "waiting" | "playing" | "roundEnd" | "matchEnd";
   roundStartTime: number;
+  ownerUserId?: string;
+  playerUserIds?: Set<string>;
   intervalId?: ReturnType<typeof setInterval>;
   nextRoundTimeout?: ReturnType<typeof setTimeout>;
   waitingPlayers?: string[];

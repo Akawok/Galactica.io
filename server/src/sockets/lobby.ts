@@ -1,3 +1,4 @@
+import { randomBytes } from "crypto";
 import type { Server, Socket } from "socket.io";
 import type { RoomState } from "../services/game.service.js";
 import { loadLoadoutStats } from "../services/game.service.js";
@@ -7,8 +8,15 @@ import {
   sendGameSnapshot,
 } from "./game.js";
 import { ChatMessage } from "../models/ChatMessage.js";
-import { User } from "../models/User.js";
+import { User, isMuted } from "../models/User.js";
 import { recordDesertion, saveGameRecord } from "../services/match.service.js";
+import { sanitizeChatMessage } from "../services/identity.service.js";
+import {
+  disconnectUserSockets,
+  socketCountForUser,
+  trackSocket,
+  untrackSocket,
+} from "./registry.js";
 
 interface ConnectedPlayer {
   socketId: string;
@@ -23,9 +31,76 @@ interface ConnectedPlayer {
 }
 
 const CHAT_MIN_INTERVAL_MS = 750;
+const MAX_ROOMS_PER_USER = 1;
+const MAX_TOTAL_ROOMS = 500;
+
+const EVENT_LIMITS: Record<string, { max: number; windowMs: number }> = {
+  "user:join": { max: 5, windowMs: 10_000 },
+  "user:updateLoadout": { max: 10, windowMs: 10_000 },
+  "game:create": { max: 10, windowMs: 60_000 },
+  "game:cancel": { max: 20, windowMs: 60_000 },
+  "game:join": { max: 20, windowMs: 60_000 },
+  "game:spectate": { max: 20, windowMs: 60_000 },
+  "game:spectateReady": { max: 30, windowMs: 60_000 },
+  "game:leave": { max: 30, windowMs: 60_000 },
+  "chat:message": { max: 20, windowMs: 30_000 },
+};
+
+const eventCounters = new Map<string, Map<string, { n: number; reset: number }>>();
+
+function allowEvent(socketId: string, event: string): boolean {
+  const limit = EVENT_LIMITS[event];
+  if (!limit) return true;
+
+  let perSocket = eventCounters.get(socketId);
+  if (!perSocket) {
+    perSocket = new Map();
+    eventCounters.set(socketId, perSocket);
+  }
+
+  const now = Date.now();
+  const entry = perSocket.get(event);
+  if (!entry || entry.reset <= now) {
+    perSocket.set(event, { n: 1, reset: now + limit.windowMs });
+    return true;
+  }
+  if (entry.n >= limit.max) return false;
+  entry.n++;
+  return true;
+}
+
+function clearEventCounters(socketId: string) {
+  eventCounters.delete(socketId);
+}
+
+function guard<T extends unknown[]>(
+  socket: Socket,
+  event: string,
+  handler: (...args: T) => void | Promise<void>,
+) {
+  socket.on(event, (...args: T) => {
+    if (!allowEvent(socket.id, event)) return;
+    try {
+      const result = handler(...args);
+      if (result instanceof Promise) {
+        result.catch((err) => console.error(`[${event}] erreur:`, err));
+      }
+    } catch (err) {
+      console.error(`[${event}] erreur:`, err);
+    }
+  });
+}
 
 const connectedPlayers = new Map<string, ConnectedPlayer>();
 export const rooms = new Map<string, RoomState>();
+
+function roomsOwnedBy(userId: string): number {
+  let count = 0;
+  for (const room of rooms.values()) {
+    if (room.ownerUserId === userId) count++;
+  }
+  return count;
+}
 
 let pendingBroadcast: NodeJS.Immediate | null = null;
 function broadcastLobbyState(io: Server) {
@@ -65,8 +140,16 @@ function doBroadcastLobbyState(io: Server) {
   io.emit("lobby:state", { players, rooms: roomList });
 }
 
-function generateRoomId() {
-  return Math.random().toString(36).substring(2, 8).toUpperCase();
+const ROOM_ID_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+function generateRoomId(): string {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const bytes = randomBytes(6);
+    let id = "";
+    for (const byte of bytes) id += ROOM_ID_ALPHABET[byte % 32];
+    if (!rooms.has(id)) return id;
+  }
+  return randomBytes(8).toString("hex").toUpperCase();
 }
 
 async function handlePlayerLeave(io: Server, socketId: string, roomId: string) {
@@ -140,32 +223,46 @@ async function handlePlayerLeave(io: Server, socketId: string, roomId: string) {
 }
 
 export function registerLobbySocket(io: Server, socket: Socket) {
-  socket.on("user:join", async () => {
-    const userId = socket.data.userId as string | undefined;
-    if (!userId) return;
-    try {
-      const user = await User.findById(userId)
-        .select("username activeShip activeBullet activeBulletSecondary")
-        .lean();
-      if (!user) return;
-      connectedPlayers.set(socket.id, {
-        socketId: socket.id,
-        userId,
-        username: user.username,
-        status: "idle",
-        activeShip: user.activeShip ?? "spaceship-01",
-        activeBullet: user.activeBullet ?? "bullet1",
-        activeBulletSecondary: user.activeBulletSecondary ?? "bullet1",
-      });
-      broadcastLobbyState(io);
-    } catch (err) {
-      console.error("[user:join] erreur:", err);
-    }
+  const userId = socket.data.userId as string | undefined;
+  if (!userId) {
+    socket.disconnect(true);
+    return;
+  }
+
+  if (socketCountForUser(userId) > 0) {
+    disconnectUserSockets(userId, "Connexion depuis un autre appareil");
+  }
+  trackSocket(socket, userId);
+
+  guard(socket, "user:join", async () => {
+    const user = await User.findById(userId)
+      .select("username activeShip activeBullet activeBulletSecondary")
+      .lean();
+    if (!user) return;
+    connectedPlayers.set(socket.id, {
+      socketId: socket.id,
+      userId,
+      username: user.username,
+      status: "idle",
+      activeShip: user.activeShip ?? "spaceship-01",
+      activeBullet: user.activeBullet ?? "bullet1",
+      activeBulletSecondary: user.activeBulletSecondary ?? "bullet1",
+    });
+    broadcastLobbyState(io);
   });
 
-  socket.on("game:create", () => {
+  guard(socket, "game:create", () => {
     const player = connectedPlayers.get(socket.id);
     if (!player || player.status !== "idle") return;
+
+    if (rooms.size >= MAX_TOTAL_ROOMS) {
+      socket.emit("game:error", { message: "Serveur saturé, réessaie plus tard" });
+      return;
+    }
+    if (roomsOwnedBy(player.userId) >= MAX_ROOMS_PER_USER) {
+      socket.emit("game:error", { message: "Tu as déjà une partie en attente" });
+      return;
+    }
 
     const roomId = generateRoomId();
     const room: RoomState = {
@@ -176,6 +273,8 @@ export function registerLobbySocket(io: Server, socket: Socket) {
       spectators: new Set(),
       status: "waiting",
       roundStartTime: 0,
+      ownerUserId: player.userId,
+      playerUserIds: new Set([player.userId]),
     };
 
     room.waitingPlayers = [socket.id];
@@ -189,23 +288,24 @@ export function registerLobbySocket(io: Server, socket: Socket) {
     broadcastLobbyState(io);
   });
 
-  socket.on("game:cancel", (data: { roomId?: string }) => {
-    if (typeof data?.roomId !== "string") return;
+  guard(socket, "game:cancel", (data: { roomId?: string }) => {
+    const roomId = validRoomId(data?.roomId);
+    if (!roomId) return;
     const player = connectedPlayers.get(socket.id);
-    const room = rooms.get(data.roomId);
+    const room = rooms.get(roomId);
     if (!room || room.status !== "waiting") return;
     if (!(room.waitingPlayers ?? []).includes(socket.id)) return;
 
-    rooms.delete(data.roomId);
-    socket.leave(data.roomId);
+    rooms.delete(roomId);
+    socket.leave(roomId);
     if (player) player.status = "idle";
-    socket.emit("game:cancelled", { roomId: data.roomId });
+    socket.emit("game:cancelled", { roomId });
     broadcastLobbyState(io);
   });
 
-  socket.on("game:join", async (data: { roomId?: string }) => {
-    if (typeof data?.roomId !== "string") return;
-    const roomId = data.roomId;
+  guard(socket, "game:join", async (data: { roomId?: string }) => {
+    const roomId = validRoomId(data?.roomId);
+    if (!roomId) return;
     const player = connectedPlayers.get(socket.id);
     const room = rooms.get(roomId);
     if (!player || !room || player.status !== "idle") return;
@@ -213,7 +313,15 @@ export function registerLobbySocket(io: Server, socket: Socket) {
     const waitingPlayers = room.waitingPlayers ?? [];
     if (room.status !== "waiting" || waitingPlayers.length >= 2) return;
 
+    if (room.playerUserIds?.has(player.userId)) {
+      socket.emit("game:error", {
+        message: "Tu ne peux pas rejoindre ta propre partie",
+      });
+      return;
+    }
+
     waitingPlayers.push(socket.id);
+    room.playerUserIds?.add(player.userId);
     room.waitingPlayers = waitingPlayers;
     socket.join(roomId);
     player.status = "in-game";
@@ -224,6 +332,7 @@ export function registerLobbySocket(io: Server, socket: Socket) {
       socket.leave(roomId);
       player.status = "idle";
       player.currentRoomId = undefined;
+      room.playerUserIds?.delete(player.userId);
       rooms.delete(roomId);
       broadcastLobbyState(io);
     };
@@ -270,34 +379,39 @@ export function registerLobbySocket(io: Server, socket: Socket) {
     broadcastLobbyState(io);
   });
 
-  socket.on("game:spectate", (data: { roomId?: string }) => {
-    if (typeof data?.roomId !== "string") return;
+  guard(socket, "game:spectate", (data: { roomId?: string }) => {
+    const roomId = validRoomId(data?.roomId);
+    if (!roomId) return;
     const player = connectedPlayers.get(socket.id);
-    const room = rooms.get(data.roomId);
+    const room = rooms.get(roomId);
     if (!player || !room || room.status === "matchEnd") return;
+    if (player.status !== "idle") return;
+    if (room.playerUserIds?.has(player.userId)) return;
 
-    socket.join(data.roomId);
+    socket.join(roomId);
     room.spectators.add(socket.id);
     player.status = "spectating";
-    player.currentRoomId = data.roomId;
+    player.currentRoomId = roomId;
 
-    socket.emit("game:spectating", { roomId: data.roomId });
+    socket.emit("game:spectating", { roomId });
     broadcastLobbyState(io);
   });
 
-  socket.on("game:spectateReady", (data: { roomId?: string }) => {
-    if (typeof data?.roomId !== "string") return;
-    const room = rooms.get(data.roomId);
+  guard(socket, "game:spectateReady", (data: { roomId?: string }) => {
+    const roomId = validRoomId(data?.roomId);
+    if (!roomId) return;
+    const room = rooms.get(roomId);
     if (!room || !room.spectators.has(socket.id)) return;
     if (room.status !== "playing" && room.status !== "roundEnd") return;
     sendGameSnapshot(socket, room);
   });
 
-  socket.on("game:leave", (data: { roomId?: string }) => {
-    if (typeof data?.roomId !== "string") return;
-    handlePlayerLeave(io, socket.id, data.roomId).catch((err) =>
-      console.error("[game:leave] erreur:", err),
-    );
+  guard(socket, "game:leave", (data: { roomId?: string }) => {
+    const roomId = validRoomId(data?.roomId);
+    if (!roomId) return;
+    const player = connectedPlayers.get(socket.id);
+    if (player?.currentRoomId !== roomId) return;
+    return handlePlayerLeave(io, socket.id, roomId);
   });
 
   socket.on("disconnect", () => {
@@ -309,37 +423,46 @@ export function registerLobbySocket(io: Server, socket: Socket) {
         );
       connectedPlayers.delete(socket.id);
     }
+    untrackSocket(socket, userId);
+    clearEventCounters(socket.id);
     broadcastLobbyState(io);
   });
 
-  socket.on("user:updateLoadout", async () => {
+  guard(socket, "user:updateLoadout", async () => {
     const player = connectedPlayers.get(socket.id);
     if (!player) return;
-    try {
-      const user = await User.findById(player.userId)
-        .select("activeShip activeBullet activeBulletSecondary")
-        .lean();
-      if (!user) return;
-      player.activeShip = user.activeShip ?? player.activeShip;
-      player.activeBullet = user.activeBullet ?? player.activeBullet;
-      player.activeBulletSecondary =
-        user.activeBulletSecondary ?? player.activeBulletSecondary;
-    } catch (err) {
-      console.error("[user:updateLoadout] erreur:", err);
-    }
+    if (player.status !== "idle") return;
+
+    const user = await User.findById(player.userId)
+      .select("activeShip activeBullet activeBulletSecondary")
+      .lean();
+    if (!user) return;
+    player.activeShip = user.activeShip ?? player.activeShip;
+    player.activeBullet = user.activeBullet ?? player.activeBullet;
+    player.activeBulletSecondary =
+      user.activeBulletSecondary ?? player.activeBulletSecondary;
   });
 
-  socket.on("chat:message", async (data: { message?: string }) => {
+  guard(socket, "chat:message", async (data: { message?: string }) => {
     const player = connectedPlayers.get(socket.id);
-    if (!player || typeof data?.message !== "string" || !data.message.trim())
-      return;
+    if (!player) return;
+
+    const sanitized = sanitizeChatMessage(data?.message);
+    if (!sanitized) return;
 
     const now = Date.now();
     if (player.lastChatAt && now - player.lastChatAt < CHAT_MIN_INTERVAL_MS)
       return;
     player.lastChatAt = now;
 
-    const sanitized = data.message.trim().slice(0, 200);
+    const account = await User.findById(player.userId)
+      .select("mutedUntil")
+      .lean();
+    if (account && isMuted(account)) {
+      socket.emit("chat:blocked", { reason: "Tu es réduit au silence" });
+      return;
+    }
+
     ChatMessage.create({
       username: player.username,
       message: sanitized,
@@ -351,4 +474,8 @@ export function registerLobbySocket(io: Server, socket: Socket) {
       timestamp: now,
     });
   });
+}
+
+function validRoomId(raw: unknown): string | null {
+  return typeof raw === "string" && /^[A-Z0-9]{6,16}$/.test(raw) ? raw : null;
 }

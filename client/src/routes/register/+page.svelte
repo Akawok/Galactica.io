@@ -10,13 +10,28 @@
 	let error = $state('');
 	let loading = $state(false);
 
+	const USERNAME_RE = /^[a-zA-Z0-9](?:[a-zA-Z0-9_-]*[a-zA-Z0-9])?$/;
+
+	function validate(): string {
+		if (!USERNAME_RE.test(username)) {
+			return 'Le pseudo ne peut contenir que des lettres non accentuées, chiffres, tirets et underscores';
+		}
+		if (password.length < 10) {
+			return 'Le mot de passe doit faire au moins 10 caractères';
+		}
+		const classes = [/[a-z]/, /[A-Z]/, /[0-9]/, /[^a-zA-Z0-9]/].filter((re) =>
+			re.test(password)
+		).length;
+		if (classes < 3) {
+			return 'Le mot de passe doit combiner au moins 3 types parmi : minuscules, majuscules, chiffres, caractères spéciaux';
+		}
+		return '';
+	}
+
 	async function handleRegister(e: Event) {
 		e.preventDefault();
-		error = '';
-		if (password.length < 6) {
-			error = 'Le mot de passe doit faire au moins 6 caractères';
-			return;
-		}
+		error = validate();
+		if (error) return;
 		loading = true;
 		try {
 			const { token, user } = await api.auth.register(username, email, password);
@@ -46,6 +61,8 @@
 				placeholder="CommanderX"
 				minlength="3"
 				maxlength="20"
+				pattern="[a-zA-Z0-9][a-zA-Z0-9_\-]*[a-zA-Z0-9]"
+				autocomplete="username"
 				required
 			/>
 		</div>
@@ -60,7 +77,9 @@
 				type="password"
 				bind:value={password}
 				placeholder="••••••••"
-				minlength="6"
+				minlength="10"
+				maxlength="128"
+				autocomplete="new-password"
 				required
 			/>
 		</div>

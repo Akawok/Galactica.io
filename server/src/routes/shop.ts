@@ -14,7 +14,7 @@ export async function shopRoutes(app: FastifyInstance) {
       onRequest: [app.authenticate],
     },
     async (req, reply) => {
-      const { id } = req.user as { id: string };
+      const id = req.account!.id;
       const user = await User.findById(id)
         .select(
           "inventory activeShip activeBullet activeBulletSecondary points",
@@ -40,12 +40,15 @@ export async function shopRoutes(app: FastifyInstance) {
         body: {
           type: "object",
           required: ["itemId"],
-          properties: { itemId: { type: "string" } },
+          additionalProperties: false,
+          properties: {
+            itemId: { type: "string", pattern: "^[a-fA-F0-9]{24}$" },
+          },
         },
       },
     },
     async (req, reply) => {
-      const { id } = req.user as { id: string };
+      const id = req.account!.id;
       const { itemId } = req.body;
 
       const item = await Item.findById(itemId)
@@ -112,28 +115,30 @@ export async function shopRoutes(app: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      const { id } = req.user as { id: string };
-      const { type, sprite, role } = req.body;
+      const id = req.account!.id;
+      const { type, sprite } = req.body;
 
       const user = await User.findById(id);
       if (!user)
         return reply.code(404).send({ error: "Utilisateur non trouvé" });
 
       const item = await Item.findOne({ sprite, type })
-        .select("price bulletRole")
+        .select("price priceGalactics bulletRole")
         .lean();
       if (!item) return reply.code(404).send({ error: "Item non trouvé" });
+
+      const isFree = item.price === 0 && (item.priceGalactics ?? 0) === 0;
       const owned =
-        item.price === 0 ||
+        isFree ||
         user.inventory.some((ref) => ref.toString() === item._id.toString());
       if (!owned) return reply.code(403).send({ error: "Item non possédé" });
 
       if (type === "ship") {
         user.activeShip = sprite;
-      } else if (type === "bullet") {
-        const itemRole = item.bulletRole ?? role;
-        if (itemRole === "secondary") user.activeBulletSecondary = sprite;
-        else user.activeBullet = sprite;
+      } else if (item.bulletRole === "secondary") {
+        user.activeBulletSecondary = sprite;
+      } else {
+        user.activeBullet = sprite;
       }
 
       await user.save();

@@ -10,30 +10,67 @@ function loadEnv() {
     const envPath = resolve(__dirname, "../../.env");
     const lines = readFileSync(envPath, "utf-8").split("\n");
     for (const line of lines) {
-      const [key, ...vals] = line.split("=");
-      if (key && vals.length) process.env[key.trim()] = vals.join("=").trim();
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+
+      const separator = trimmed.indexOf("=");
+      if (separator <= 0) continue;
+
+      const key = trimmed.slice(0, separator).trim();
+      if (key in process.env) continue;
+
+      process.env[key] = trimmed
+        .slice(separator + 1)
+        .trim()
+        .replace(/^(['"])(.*)\1$/, "$2");
     }
   } catch {}
 }
 
 loadEnv();
 
-export const config = {
-  mongoUri: process.env.MONGO_URI ?? "mongodb://localhost:27017/galactica",
-  jwtSecret: process.env.JWT_SECRET ?? "change_me",
-  port: Number(process.env.PORT ?? 3000),
-  clientUrl: process.env.CLIENT_URL ?? "http://localhost:5173",
-};
+const MIN_SECRET_LENGTH = 32;
+const FORBIDDEN_SECRETS = new Set([
+  "change_me",
+  "changeme",
+  "secret",
+  "jwtsecret",
+  "dev",
+  "test",
+  "password",
+]);
 
-if (!process.env.JWT_SECRET) {
-  if (process.env.NODE_ENV === "production") {
-    console.error("❌ JWT_SECRET est obligatoire en production");
+function resolveJwtSecret(): string {
+  const secret = process.env.JWT_SECRET?.trim();
+
+  if (!secret) {
+    console.error(
+      "❌ JWT_SECRET est obligatoire. Génère-le avec : openssl rand -hex 32",
+    );
     process.exit(1);
   }
-  console.warn(
-    "⚠️  JWT_SECRET non défini — secret par défaut utilisé (dev uniquement, NE PAS déployer ainsi)",
-  );
+  if (secret.length < MIN_SECRET_LENGTH) {
+    console.error(
+      `❌ JWT_SECRET trop court (${secret.length} caractères, minimum ${MIN_SECRET_LENGTH}). Génère-le avec : openssl rand -hex 32`,
+    );
+    process.exit(1);
+  }
+  if (FORBIDDEN_SECRETS.has(secret.toLowerCase())) {
+    console.error("❌ JWT_SECRET est une valeur par défaut connue, refusée.");
+    process.exit(1);
+  }
+  return secret;
 }
+
+export const isProduction = process.env.NODE_ENV === "production";
+
+export const config = {
+  mongoUri: process.env.MONGO_URI ?? "mongodb://localhost:27017/galactica",
+  jwtSecret: resolveJwtSecret(),
+  port: Number(process.env.PORT ?? 3000),
+  clientUrl: process.env.CLIENT_URL ?? "http://localhost:5173",
+  tokenTTL: process.env.TOKEN_TTL ?? "12h",
+};
 
 export async function connectDB() {
   try {

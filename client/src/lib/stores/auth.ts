@@ -1,9 +1,12 @@
 import { writable, derived } from 'svelte/store';
 import { browser } from '$app/environment';
 
+export type UserRole = 'user' | 'moderator' | 'admin';
+
 export interface AuthUser {
 	id: string;
 	username: string;
+	role?: UserRole;
 	points: number;
 	galactics?: number;
 	xp: number;
@@ -17,12 +20,19 @@ function createAuthStore() {
 	const stored = browser ? localStorage.getItem('galactica_token') : null;
 	const storedUser = browser ? localStorage.getItem('galactica_user') : null;
 
+	let initialUser: AuthUser | null = null;
+	try {
+		initialUser = storedUser ? JSON.parse(storedUser) : null;
+	} catch {
+		if (browser) localStorage.removeItem('galactica_user');
+	}
+
 	const { subscribe, set, update } = writable<{
 		token: string | null;
 		user: AuthUser | null;
 	}>({
 		token: stored,
-		user: storedUser ? JSON.parse(storedUser) : null
+		user: initialUser
 	});
 
 	return {
@@ -56,3 +66,8 @@ export const auth = createAuthStore();
 export const isAuthenticated = derived(auth, ($auth) => !!$auth.token && !!$auth.user);
 export const currentUser = derived(auth, ($auth) => $auth.user);
 export const token = derived(auth, ($auth) => $auth.token);
+
+export const isStaff = derived(
+	auth,
+	($auth) => $auth.user?.role === 'moderator' || $auth.user?.role === 'admin'
+);
