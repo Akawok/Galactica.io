@@ -160,7 +160,7 @@ describe("mot de passe oublié", () => {
     assert.equal(stale.status, 400, "l'ancien lien doit être invalide");
   });
 
-  test("refuse un mot de passe faible malgré un token valide", async (t) => {
+  test("refuse un mot de passe faible sans consommer le lien", async (t) => {
     if (!captureEnabled) {
       t.skip("CAPTURE_MAILS=true requis pour ce test");
       return;
@@ -173,11 +173,21 @@ describe("mot de passe oublié", () => {
     });
     const token = await tokenFromMail(user.email);
 
-    const res = await call("/auth/reset-password", {
+    const rejected = await call("/auth/reset-password", {
       method: "POST",
       body: JSON.stringify({ token, password: "motdepasse" }),
     });
-    assert.equal(res.status, 400);
+    assert.equal(rejected.status, 400);
+
+    const retry = await call("/auth/reset-password", {
+      method: "POST",
+      body: JSON.stringify({ token, password: "Seconde!Chance7" }),
+    });
+    assert.equal(
+      retry.status,
+      200,
+      "un refus de validation ne doit pas invalider le lien",
+    );
   });
 });
 

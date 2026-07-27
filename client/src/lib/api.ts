@@ -61,7 +61,26 @@ export const api = {
 				method: 'POST',
 				body: JSON.stringify({ email, password })
 			}),
-		me: () => request<{ user: any }>('/auth/me')
+		me: () => request<{ user: any }>('/auth/me'),
+		forgotPassword: (email: string) =>
+			request<{ ok: boolean; message: string }>('/auth/forgot-password', {
+				method: 'POST',
+				body: JSON.stringify({ email })
+			}),
+		resetPassword: (token: string, password: string) =>
+			request<{ ok: boolean }>('/auth/reset-password', {
+				method: 'POST',
+				body: JSON.stringify({ token, password })
+			}),
+		sendVerification: () =>
+			request<{ ok: boolean; alreadyVerified?: boolean }>('/auth/send-verification', {
+				method: 'POST'
+			}),
+		verifyEmail: (token: string) =>
+			request<{ ok: boolean }>('/auth/verify-email', {
+				method: 'POST',
+				body: JSON.stringify({ token })
+			})
 	},
 	shop: {
 		items: () => request<{ items: any[] }>('/shop/items'),

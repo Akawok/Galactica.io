@@ -43,8 +43,10 @@
 				type="password"
 				bind:value={password}
 				placeholder="••••••••"
+				autocomplete="current-password"
 				required
 			/>
+			<a class="forgot" href="/forgot-password">Mot de passe oublié ?</a>
 		</div>
 	{/snippet}
 
@@ -74,5 +76,18 @@
 
 	.btn {
 		margin-top: 0.5rem;
+	}
+
+	.forgot {
+		align-self: flex-end;
+		font-size: 0.78rem;
+		color: #6870a0;
+		text-decoration: none;
+		margin-top: 0.15rem;
+	}
+
+	.forgot:hover {
+		color: #7b8cff;
+		text-decoration: underline;
 	}
 </style>

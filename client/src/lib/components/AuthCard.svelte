@@ -5,13 +5,23 @@
 		title: string;
 		subtitle: string;
 		error?: string;
+		notice?: string;
 		fields: Snippet;
 		submit: Snippet;
 		footer: Snippet;
 		onsubmit: (e: Event) => void;
 	}
 
-	let { title, subtitle, error = '', fields, submit, footer, onsubmit }: Props = $props();
+	let {
+		title,
+		subtitle,
+		error = '',
+		notice = '',
+		fields,
+		submit,
+		footer,
+		onsubmit
+	}: Props = $props();
 </script>
 
 <div class="auth-page">
@@ -26,6 +36,10 @@
 
 			{#if error}
 				<p class="error">{error}</p>
+			{/if}
+
+			{#if notice}
+				<p class="notice">{notice}</p>
 			{/if}
 
 			{@render submit()}
@@ -100,6 +114,15 @@
 		text-align: center;
 		padding: 0.5rem;
 		background: rgba(255, 60, 60, 0.1);
+		border-radius: 6px;
+	}
+
+	.notice {
+		color: #6bd6a0;
+		font-size: 0.85rem;
+		text-align: center;
+		padding: 0.5rem;
+		background: rgba(60, 220, 150, 0.1);
 		border-radius: 6px;
 	}
 

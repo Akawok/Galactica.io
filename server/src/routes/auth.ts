@@ -16,7 +16,11 @@ import {
 } from "../services/identity.service.js";
 import { config } from "../config.js";
 import { clearSession, issueSession } from "../services/session.service.js";
-import { consumeToken, issueToken } from "../services/token.service.js";
+import {
+  consumeToken,
+  issueToken,
+  peekToken,
+} from "../services/token.service.js";
 import {
   sendEmailVerification,
   sendPasswordReset,
@@ -176,12 +180,12 @@ export async function authRoutes(app: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      const userId = await consumeToken(req.body.token, "password-reset");
-      if (!userId) {
+      const candidateId = await peekToken(req.body.token, "password-reset");
+      if (!candidateId) {
         return reply.code(400).send({ error: "Lien invalide ou expiré" });
       }
 
-      const user = await User.findById(userId)
+      const user = await User.findById(candidateId)
         .select("username email")
         .lean();
       if (!user) return reply.code(400).send({ error: "Lien invalide" });
@@ -194,6 +198,11 @@ export async function authRoutes(app: FastifyInstance) {
           return reply.code(400).send({ error: err.message });
         }
         throw err;
+      }
+
+      const userId = await consumeToken(req.body.token, "password-reset");
+      if (!userId) {
+        return reply.code(400).send({ error: "Lien invalide ou expiré" });
       }
 
       await User.updateOne(

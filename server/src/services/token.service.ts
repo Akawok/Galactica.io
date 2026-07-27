@@ -27,6 +27,22 @@ export async function issueToken(
   return token;
 }
 
+export async function peekToken(
+  token: unknown,
+  purpose: TokenPurpose,
+): Promise<string | null> {
+  if (typeof token !== "string" || token.length < 20) return null;
+
+  const entry = await Token.findOne({
+    tokenHash: hashToken(token),
+    purpose,
+    usedAt: null,
+    expiresAt: { $gt: new Date() },
+  }).lean();
+
+  return entry ? String(entry.userId) : null;
+}
+
 export async function consumeToken(
   token: unknown,
   purpose: TokenPurpose,

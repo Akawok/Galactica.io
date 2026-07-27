@@ -12,9 +12,16 @@
 
 	let { children } = $props();
 
-	const PUBLIC_ROUTES = ['/login', '/register'];
+	const PUBLIC_ROUTES = [
+		'/login',
+		'/register',
+		'/forgot-password',
+		'/reset-password',
+		'/verify-email'
+	];
 
 	onMount(async () => {
+		if (PUBLIC_ROUTES.includes($page.url.pathname)) return;
 		try {
 			const { user } = await api.auth.me();
 			auth.login(user);
