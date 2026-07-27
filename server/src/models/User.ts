@@ -8,6 +8,7 @@ export interface IUser extends Document {
   email: string;
   passwordHash: string;
   role: UserRole;
+  emailVerified: boolean;
   tokenVersion: number;
   bannedUntil?: Date | null;
   banReason?: string | null;
@@ -52,6 +53,7 @@ const UserSchema = new Schema<IUser>({
     enum: ["user", "moderator", "admin"],
     default: "user",
   },
+  emailVerified: { type: Boolean, default: false },
   tokenVersion: { type: Number, default: 0 },
   bannedUntil: { type: Date, default: null },
   banReason: { type: String, default: null },

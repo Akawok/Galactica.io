@@ -1,8 +1,9 @@
-import Fastify from "fastify";
+import Fastify, { type FastifyError } from "fastify";
 import fastifyJwt from "@fastify/jwt";
 import fastifyCors from "@fastify/cors";
 import fastifyHelmet from "@fastify/helmet";
 import fastifyRateLimit from "@fastify/rate-limit";
+import fastifyCookie from "@fastify/cookie";
 import { createServer } from "http";
 import { Server } from "socket.io";
 import { config, isProduction, connectDB } from "./config.js";
@@ -19,13 +20,19 @@ import {
   authorizeToken,
   hasRole,
 } from "./services/access.service.js";
+import {
+  readSessionToken,
+  readSocketToken,
+  verifyCsrf,
+} from "./services/session.service.js";
 import type { UserRole } from "./models/User.js";
 import { pruneLoginAttempts } from "./services/auth.service.js";
+import { sentMails } from "./services/mailer.service.js";
 
 const httpServer = createServer();
 
 const app = Fastify({
-  trustProxy: isProduction,
+  trustProxy: isProduction || process.env.TRUST_PROXY === "true",
   bodyLimit: 64 * 1024,
   ajv: { customOptions: { removeAdditional: false, allErrors: false } },
   logger: {
@@ -67,10 +74,13 @@ await app.register(fastifyHelmet, {
     : false,
 });
 
+await app.register(fastifyCookie);
+
 await app.register(fastifyCors, {
   origin: config.clientUrl,
   credentials: true,
   methods: ["GET", "POST", "PATCH"],
+  allowedHeaders: ["Content-Type", "Authorization", "x-csrf-token"],
 });
 
 await app.register(fastifyRateLimit, {
@@ -93,13 +103,21 @@ await app.register(fastifyJwt, {
 });
 
 app.decorate("authenticate", async (request: any, reply: any) => {
+  if (!verifyCsrf(request)) {
+    return reply.code(403).send({ error: "Requête non autorisée (CSRF)" });
+  }
+
+  const token = readSessionToken(request);
+  if (!token) return reply.code(401).send({ error: "Non autorisé" });
+
+  let payload: unknown;
   try {
-    await request.jwtVerify();
+    payload = app.jwt.verify(token);
   } catch {
     return reply.code(401).send({ error: "Non autorisé" });
   }
 
-  const result = await authorizeToken(request.user);
+  const result = await authorizeToken(payload);
   if ("failure" in result) {
     const code = result.failure === "banned" ? 403 : 401;
     return reply
@@ -119,7 +137,7 @@ app.decorate(
   },
 );
 
-app.setErrorHandler((err, req, reply) => {
+app.setErrorHandler((err: FastifyError, req, reply) => {
   const status = err.statusCode ?? 500;
   if (status >= 500) {
     req.log.error({ err }, "unhandled error");
@@ -146,16 +164,28 @@ await app.register(adminRoutes);
 
 app.get("/health", async () => ({ status: "ok" }));
 
+if (config.captureMails) {
+  app.log.warn("CAPTURE_MAILS actif : /test/mails est exposé (jamais en prod)");
+  app.get("/test/mails", async () => ({ mails: sentMails }));
+}
+
 const io = new Server(httpServer, {
-  cors: { origin: config.clientUrl, methods: ["GET", "POST"] },
+  cors: {
+    origin: config.clientUrl,
+    methods: ["GET", "POST"],
+    credentials: true,
+  },
+  transports: ["websocket"],
+  allowUpgrades: false,
   maxHttpBufferSize: 8 * 1024,
   pingTimeout: 20_000,
+  connectTimeout: 10_000,
 });
 
 io.use(async (socket, next) => {
   try {
-    const token = socket.handshake.auth?.token;
-    if (typeof token !== "string" || !token) {
+    const token = readSocketToken(socket.handshake);
+    if (!token) {
       return next(new Error("Authentification requise"));
     }
 

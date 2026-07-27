@@ -158,11 +158,9 @@
 	);
 
 	onMount(async () => {
-		const u = $currentUser;
-		const tok = u ? localStorage.getItem('galactica_token') : null;
-		if (!u || !tok) return;
+		if (!$currentUser) return;
 
-		socket = connectSocket(tok);
+		socket = connectSocket();
 
 		const [statsResult, chatResult, shopResult, lbResult] = await Promise.allSettled([
 			api.stats.me(),

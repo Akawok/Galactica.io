@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
-	import { isAuthenticated, auth, currentUser, token } from '$lib/stores/auth';
+	import { isAuthenticated, auth, currentUser } from '$lib/stores/auth';
 	import { connectSocket, disconnectSocket } from '$lib/stores/socket';
 	import { addMessage } from '$lib/stores/chat';
 	import Rocket from '@lucide/svelte/icons/rocket';
@@ -15,11 +15,12 @@
 	const PUBLIC_ROUTES = ['/login', '/register'];
 
 	onMount(async () => {
-		if (!$token) return;
 		try {
 			const { user } = await api.auth.me();
-			auth.updateUser(user);
-		} catch {}
+			auth.login(user);
+		} catch {
+			auth.clearLocal();
+		}
 	});
 
 	$effect(() => {
@@ -30,7 +31,6 @@
 
 	$effect(() => {
 		if (!$isAuthenticated) return;
-		const { token } = $page.data ?? {};
 		import('$lib/stores/socket').then(({ getSocket }) => {
 			const socket = getSocket();
 			if (!socket) return;
@@ -39,9 +39,12 @@
 		});
 	});
 
-	function logout() {
+	async function logout() {
 		disconnectSocket();
-		auth.logout();
+		try {
+			await api.auth.logout();
+		} catch {}
+		auth.clearLocal();
 		goto('/login');
 	}
 </script>

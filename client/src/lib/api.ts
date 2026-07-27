@@ -1,19 +1,36 @@
 import { get } from 'svelte/store';
 import { auth } from './stores/auth';
 
-const BASE_URL = 'http://localhost:3000';
+const BASE_URL = import.meta.env.VITE_SERVER_URL ?? 'http://localhost:3000';
+
+function readCsrfCookie(): string | null {
+	if (typeof document === 'undefined') return null;
+	for (const part of document.cookie.split(';')) {
+		const [name, ...rest] = part.trim().split('=');
+		if (name === 'galactica_csrf' && rest.length) {
+			return decodeURIComponent(rest.join('='));
+		}
+	}
+	return null;
+}
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-	const { token } = get(auth);
-
 	const headers: Record<string, string> = {
 		'Content-Type': 'application/json',
 		...(options.headers as Record<string, string>)
 	};
 
-	if (token) headers['Authorization'] = `Bearer ${token}`;
+	const method = (options.method ?? 'GET').toUpperCase();
+	if (method !== 'GET' && method !== 'HEAD') {
+		const csrf = readCsrfCookie();
+		if (csrf) headers['x-csrf-token'] = csrf;
+	}
 
-	const res = await fetch(`${BASE_URL}${path}`, { ...options, headers });
+	const res = await fetch(`${BASE_URL}${path}`, {
+		...options,
+		headers,
+		credentials: 'include'
+	});
 
 	let data: any = null;
 	try {
@@ -23,8 +40,8 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 	}
 
 	if (!res.ok) {
-		if ((res.status === 401 || res.status === 403) && token) {
-			auth.logout();
+		if (res.status === 401 && get(auth).user) {
+			auth.clearLocal();
 		}
 		throw new Error(data?.error ?? 'Erreur serveur');
 	}
@@ -34,12 +51,13 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 export const api = {
 	auth: {
 		register: (username: string, email: string, password: string) =>
-			request<{ token: string; user: any }>('/auth/register', {
+			request<{ csrfToken: string; user: any }>('/auth/register', {
 				method: 'POST',
 				body: JSON.stringify({ username, email, password })
 			}),
+		logout: () => request<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
 		login: (email: string, password: string) =>
-			request<{ token: string; user: any }>('/auth/login', {
+			request<{ csrfToken: string; user: any }>('/auth/login', {
 				method: 'POST',
 				body: JSON.stringify({ email, password })
 			}),

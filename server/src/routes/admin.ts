@@ -4,6 +4,7 @@ import { User, serializeUser } from "../models/User.js";
 import { ChatMessage } from "../models/ChatMessage.js";
 import { hasRole } from "../services/access.service.js";
 import { disconnectUserSockets } from "../sockets/registry.js";
+import { AuditLog, recordAudit } from "../models/AuditLog.js";
 
 const objectIdParam = {
   type: "object",
@@ -86,14 +87,15 @@ export async function adminRoutes(app: FastifyInstance) {
       );
       disconnectUserSockets(String(target._id), "Compte suspendu");
 
-      req.log.warn(
-        {
-          actor: req.account?.id,
-          target: String(target._id),
-          until: bannedUntil,
-        },
-        "user banned",
-      );
+      await recordAudit({
+        action: "ban",
+        actorId: req.account!.id,
+        actorUsername: req.account!.username,
+        targetId: String(target._id),
+        targetUsername: target.username,
+        details: { bannedUntil, reason: req.body.reason ?? null },
+        ip: req.ip,
+      });
       return reply.send({ userId: String(target._id), bannedUntil });
     },
   );
@@ -109,6 +111,14 @@ export async function adminRoutes(app: FastifyInstance) {
         { _id: target._id },
         { $set: { bannedUntil: null, banReason: null } },
       );
+      await recordAudit({
+        action: "unban",
+        actorId: req.account!.id,
+        actorUsername: req.account!.username,
+        targetId: String(target._id),
+        targetUsername: target.username,
+        ip: req.ip,
+      });
       return reply.send({ userId: String(target._id), bannedUntil: null });
     },
   );
@@ -141,6 +151,15 @@ export async function adminRoutes(app: FastifyInstance) {
           ? null
           : new Date(Date.now() + req.body.durationMinutes * 60_000);
       await User.updateOne({ _id: target._id }, { $set: { mutedUntil } });
+      await recordAudit({
+        action: "mute",
+        actorId: req.account!.id,
+        actorUsername: req.account!.username,
+        targetId: String(target._id),
+        targetUsername: target.username,
+        details: { mutedUntil },
+        ip: req.ip,
+      });
       return reply.send({ userId: String(target._id), mutedUntil });
     },
   );
@@ -177,11 +196,39 @@ export async function adminRoutes(app: FastifyInstance) {
         return reply.code(404).send({ error: "Utilisateur non trouvé" });
 
       disconnectUserSockets(userId, "Rôle modifié, reconnecte-toi");
-      req.log.warn(
-        { actor: req.account?.id, target: userId, role: req.body.role },
-        "role changed",
-      );
+      await recordAudit({
+        action: "role-change",
+        actorId: req.account!.id,
+        actorUsername: req.account!.username,
+        targetId: userId,
+        targetUsername: updated.username,
+        details: { role: req.body.role },
+        ip: req.ip,
+      });
       return reply.send({ user: serializeUser(updated) });
+    },
+  );
+
+  app.get<{ Querystring: { limit?: number } }>(
+    "/admin/audit",
+    {
+      ...admin,
+      schema: {
+        querystring: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            limit: { type: "integer", minimum: 1, maximum: 200 },
+          },
+        },
+      },
+    },
+    async (req, reply) => {
+      const entries = await AuditLog.find()
+        .sort({ createdAt: -1 })
+        .limit(req.query.limit ?? 50)
+        .lean();
+      return reply.send({ entries });
     },
   );
 
@@ -202,10 +249,14 @@ export async function adminRoutes(app: FastifyInstance) {
         ? { username: req.body.username }
         : {};
       const { deletedCount } = await ChatMessage.deleteMany(filter);
-      req.log.warn(
-        { actor: req.account?.id, filter, deletedCount },
-        "chat purged",
-      );
+      await recordAudit({
+        action: "chat-purge",
+        actorId: req.account!.id,
+        actorUsername: req.account!.username,
+        targetUsername: req.body?.username,
+        details: { deletedCount },
+        ip: req.ip,
+      });
       return reply.send({ deletedCount });
     },
   );
@@ -226,7 +277,7 @@ async function findModeratableTarget(req: any, reply: any) {
     return null;
   }
 
-  const target = await User.findById(userId).select("role").lean();
+  const target = await User.findById(userId).select("role username").lean();
   if (!target) {
     reply.code(404).send({ error: "Utilisateur non trouvé" });
     return null;

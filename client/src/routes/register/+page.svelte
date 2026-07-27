@@ -34,8 +34,8 @@
 		if (error) return;
 		loading = true;
 		try {
-			const { token, user } = await api.auth.register(username, email, password);
-			auth.login(token, user);
+			const { user } = await api.auth.register(username, email, password);
+			auth.login(user);
 			goto('/lobby');
 		} catch (err: any) {
 			error = err.message;

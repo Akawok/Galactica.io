@@ -14,8 +14,8 @@
 		error = '';
 		loading = true;
 		try {
-			const { token, user } = await api.auth.login(email, password);
-			auth.login(token, user);
+			const { user } = await api.auth.login(email, password);
+			auth.login(user);
 			goto('/lobby');
 		} catch (err: any) {
 			error = err.message;

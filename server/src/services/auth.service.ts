@@ -10,15 +10,27 @@ import {
 } from "./identity.service.js";
 
 const SALT_ROUNDS = 12;
+
+export function hashPassword(password: string): Promise<string> {
+  return bcrypt.hash(password, SALT_ROUNDS);
+}
 const DUMMY_HASH = "$2b$12$C6UzMDM.H6dfI/f/IKcEe.rTqQ0dqXlbBFsUVFm0z8ByRJyxNRVvS";
 
 const LOCKOUT_THRESHOLD = 8;
 const LOCKOUT_MS = 15 * 60_000;
-const failedLogins = new Map<string, { count: number; until: number }>();
+const FAILURE_WINDOW_MS = 15 * 60_000;
+
+interface FailureEntry {
+  count: number;
+  windowEnd: number;
+  lockedUntil: number;
+}
+
+const failedLogins = new Map<string, FailureEntry>();
 
 function assertNotLockedOut(key: string) {
   const entry = failedLogins.get(key);
-  if (entry && entry.until > Date.now()) {
+  if (entry && entry.lockedUntil > Date.now()) {
     throw new ValidationError(
       "Compte temporairement verrouillé après trop de tentatives. Réessaie dans quelques minutes.",
     );
@@ -28,12 +40,26 @@ function assertNotLockedOut(key: string) {
 function registerFailure(key: string) {
   const now = Date.now();
   const entry = failedLogins.get(key);
-  if (!entry || entry.until <= now) {
-    failedLogins.set(key, { count: 1, until: now + LOCKOUT_MS });
+
+  if (!entry || entry.windowEnd <= now) {
+    failedLogins.set(key, {
+      count: 1,
+      windowEnd: now + FAILURE_WINDOW_MS,
+      lockedUntil: 0,
+    });
     return;
   }
+
   entry.count++;
-  if (entry.count >= LOCKOUT_THRESHOLD) entry.until = now + LOCKOUT_MS;
+  if (entry.count >= LOCKOUT_THRESHOLD) {
+    entry.lockedUntil = now + LOCKOUT_MS;
+    entry.count = 0;
+    entry.windowEnd = now + FAILURE_WINDOW_MS;
+  }
+}
+
+export function clearLoginFailures(key: string) {
+  failedLogins.delete(key.trim().toLowerCase());
 }
 
 function clearFailures(key: string) {
@@ -43,7 +69,9 @@ function clearFailures(key: string) {
 export function pruneLoginAttempts() {
   const now = Date.now();
   for (const [key, entry] of failedLogins) {
-    if (entry.until <= now) failedLogins.delete(key);
+    if (entry.lockedUntil <= now && entry.windowEnd <= now) {
+      failedLogins.delete(key);
+    }
   }
 }
 

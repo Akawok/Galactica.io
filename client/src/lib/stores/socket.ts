@@ -4,7 +4,7 @@ import { browser } from '$app/environment';
 import { goto } from '$app/navigation';
 import { auth } from './auth';
 
-const SERVER_URL = 'http://localhost:3000';
+const SERVER_URL = import.meta.env.VITE_SERVER_URL ?? 'http://localhost:3000';
 
 let socketInstance: Socket | null = null;
 
@@ -13,21 +13,23 @@ export const sessionTerminated = writable<string | null>(null);
 
 export function getSocket(): Socket {
 	if (!socketInstance && browser) {
-		socketInstance = io(SERVER_URL, { autoConnect: false });
+		socketInstance = io(SERVER_URL, {
+			autoConnect: false,
+			transports: ['websocket'],
+			withCredentials: true
+		});
 		socketStore.set(socketInstance);
 	}
 	return socketInstance!;
 }
 
-export function connectSocket(token: string) {
+export function connectSocket() {
 	const socket = getSocket();
 	if (!socket.connected) {
-		socket.auth = { token };
-
 		socket.off('session:terminated');
 		socket.on('session:terminated', ({ reason }: { reason?: string }) => {
 			sessionTerminated.set(reason ?? 'Session terminée');
-			auth.logout();
+			auth.clearLocal();
 			disconnectSocket();
 			if (browser) goto('/login');
 		});

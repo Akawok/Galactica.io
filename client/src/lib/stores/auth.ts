@@ -16,56 +16,55 @@ export interface AuthUser {
 	activeBulletSecondary: string;
 }
 
+const USER_KEY = 'galactica_user';
+
 function createAuthStore() {
-	const stored = browser ? localStorage.getItem('galactica_token') : null;
-	const storedUser = browser ? localStorage.getItem('galactica_user') : null;
+	if (browser) {
+		localStorage.removeItem('galactica_token');
+	}
 
 	let initialUser: AuthUser | null = null;
 	try {
-		initialUser = storedUser ? JSON.parse(storedUser) : null;
+		const stored = browser ? localStorage.getItem(USER_KEY) : null;
+		initialUser = stored ? JSON.parse(stored) : null;
 	} catch {
-		if (browser) localStorage.removeItem('galactica_user');
+		if (browser) localStorage.removeItem(USER_KEY);
 	}
 
-	const { subscribe, set, update } = writable<{
-		token: string | null;
-		user: AuthUser | null;
-	}>({
-		token: stored,
+	const { subscribe, set, update } = writable<{ user: AuthUser | null }>({
 		user: initialUser
 	});
 
+	function persist(user: AuthUser | null) {
+		if (!browser) return;
+		if (user) localStorage.setItem(USER_KEY, JSON.stringify(user));
+		else localStorage.removeItem(USER_KEY);
+	}
+
 	return {
 		subscribe,
-		login(token: string, user: AuthUser) {
-			if (browser) {
-				localStorage.setItem('galactica_token', token);
-				localStorage.setItem('galactica_user', JSON.stringify(user));
-			}
-			set({ token, user });
+		login(user: AuthUser) {
+			persist(user);
+			set({ user });
 		},
-		logout() {
-			if (browser) {
-				localStorage.removeItem('galactica_token');
-				localStorage.removeItem('galactica_user');
-			}
-			set({ token: null, user: null });
+		clearLocal() {
+			persist(null);
+			set({ user: null });
 		},
 		updateUser(updates: Partial<AuthUser>) {
 			update((state) => {
 				if (!state.user) return state;
 				const user = { ...state.user, ...updates };
-				if (browser) localStorage.setItem('galactica_user', JSON.stringify(user));
-				return { ...state, user };
+				persist(user);
+				return { user };
 			});
 		}
 	};
 }
 
 export const auth = createAuthStore();
-export const isAuthenticated = derived(auth, ($auth) => !!$auth.token && !!$auth.user);
+export const isAuthenticated = derived(auth, ($auth) => !!$auth.user);
 export const currentUser = derived(auth, ($auth) => $auth.user);
-export const token = derived(auth, ($auth) => $auth.token);
 
 export const isStaff = derived(
 	auth,

@@ -70,6 +70,9 @@ export const config = {
   port: Number(process.env.PORT ?? 3000),
   clientUrl: process.env.CLIENT_URL ?? "http://localhost:5173",
   tokenTTL: process.env.TOKEN_TTL ?? "12h",
+  captureMails:
+    process.env.NODE_ENV !== "production" &&
+    process.env.CAPTURE_MAILS === "true",
 };
 
 export async function connectDB() {
