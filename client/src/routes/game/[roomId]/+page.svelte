@@ -65,6 +65,7 @@
 			(data: { winner: { username: string } | null; scores: Record<string, number> }) => {
 				status = 'roundEnd';
 				roundResult = { winner: data.winner?.username ?? null, scores: data.scores };
+				engine?.pause();
 				engine?.updateScores(data.scores);
 				setTimeout(() => {
 					if (status === 'roundEnd') {

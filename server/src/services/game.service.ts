@@ -27,7 +27,14 @@ export const GAME_CONFIG = {
   XP_PER_WIN: 120,
   XP_PER_LOSS: 40,
   TICK_RATE: 1000 / 60,
+  // Max time a shooter's view may be rewound for hit detection (lag compensation)
+  MAX_REWIND_MS: 200,
+  HISTORY_MS: 1000,
 };
+
+export function cooldownTicks(cooldownMs: number): number {
+  return Math.max(1, Math.round(cooldownMs / GAME_CONFIG.TICK_RATE));
+}
 
 export interface LoadoutStats {
   maxHp: number;
@@ -128,9 +135,13 @@ export interface PlayerState extends LoadoutStats {
   sprite: string;
   bulletSprite: string;
   bulletSpriteSecondary: string;
-  lastNormalShot: number;
-  lastSpecialShot: number;
+  // Shot cooldowns are counted in processed inputs so the client can predict them exactly
+  inputClock: number;
+  lastNormalShotClock: number;
+  lastSpecialShotClock: number;
   prevRightClick: boolean;
+  viewLag: number;
+  history: { t: number; x: number; y: number }[];
 }
 
 export interface BulletState {
@@ -144,6 +155,9 @@ export interface BulletState {
   radius: number;
   type: "normal" | "special";
   sprite: string;
+  seq: number;
+  spawnT: number;
+  viewLag: number;
 }
 
 export interface RoomState {
@@ -159,9 +173,17 @@ export interface RoomState {
   intervalId?: ReturnType<typeof setInterval>;
   nextRoundTimeout?: ReturnType<typeof setTimeout>;
   waitingPlayers?: string[];
+  simTime?: number;
   lastSent?: Map<
     string,
-    { x: number; y: number; angle: number; hp: number; energy: number }
+    {
+      x: number;
+      y: number;
+      angle: number;
+      hp: number;
+      energy: number;
+      seq: number;
+    }
   >;
 }
 
@@ -194,16 +216,29 @@ export function createPlayerState(
     sprite,
     bulletSprite,
     bulletSpriteSecondary,
-    lastNormalShot: 0,
-    lastSpecialShot: 0,
+    inputClock: 0,
+    lastNormalShotClock: -Infinity,
+    lastSpecialShotClock: -Infinity,
     prevRightClick: false,
+    viewLag: 0,
+    history: [],
     ...stats,
   };
+}
+
+export function resetShotState(player: PlayerState): void {
+  player.inputClock = 0;
+  player.lastNormalShotClock = -Infinity;
+  player.lastSpecialShotClock = -Infinity;
+  player.prevRightClick = false;
+  player.viewLag = 0;
+  player.history = [];
 }
 
 export function applyInput(
   player: PlayerState,
   input: {
+    seq: number;
     keys: string[];
     mouseAngle: number;
     leftClick: boolean;
@@ -212,6 +247,8 @@ export function applyInput(
   now: number,
 ): BulletState[] {
   const bullets: BulletState[] = [];
+  player.inputClock++;
+  const clock = player.inputClock;
 
   player.angle = input.mouseAngle;
 
@@ -246,11 +283,11 @@ export function applyInput(
 
   if (
     input.leftClick &&
-    now - player.lastNormalShot >= player.primaryCooldown
+    clock - player.lastNormalShotClock >= cooldownTicks(player.primaryCooldown)
   ) {
-    player.lastNormalShot = now;
+    player.lastNormalShotClock = clock;
     bullets.push({
-      id: `${player.id}_n_${now}`,
+      id: `${player.id}:${input.seq}:n`,
       ownerId: player.id,
       x: player.x + cos * muzzleOffset,
       y: player.y + sin * muzzleOffset,
@@ -260,21 +297,25 @@ export function applyInput(
       radius: GAME_CONFIG.BULLET_RADIUS,
       type: "normal",
       sprite: player.bulletSprite,
+      seq: input.seq,
+      spawnT: now,
+      viewLag: player.viewLag,
     });
   }
 
   const specialPressed = input.rightClick && !player.prevRightClick;
   if (
     specialPressed &&
-    now - player.lastSpecialShot >= player.specialCooldown &&
+    clock - player.lastSpecialShotClock >=
+      cooldownTicks(player.specialCooldown) &&
     player.energy >= player.specialEnergyCost
   ) {
-    player.lastSpecialShot = now;
+    player.lastSpecialShotClock = clock;
     player.energy -= player.specialEnergyCost;
     const specialMuzzle =
       GAME_CONFIG.SHIP_RADIUS + GAME_CONFIG.BULLET_RADIUS * 2 + 1;
     bullets.push({
-      id: `${player.id}_s_${now}`,
+      id: `${player.id}:${input.seq}:s`,
       ownerId: player.id,
       x: player.x + cos * specialMuzzle,
       y: player.y + sin * specialMuzzle,
@@ -284,6 +325,9 @@ export function applyInput(
       radius: GAME_CONFIG.BULLET_RADIUS * 2,
       type: "special",
       sprite: player.bulletSpriteSecondary,
+      seq: input.seq,
+      spawnT: now,
+      viewLag: player.viewLag,
     });
   }
   player.prevRightClick = input.rightClick;
@@ -353,9 +397,40 @@ export function moveBullets(bullets: BulletState[]): string[] {
   return removed;
 }
 
+export function recordHistory(players: PlayerState[], t: number): void {
+  for (const p of players) {
+    p.history.push({ t, x: p.x, y: p.y });
+    const cutoff = t - GAME_CONFIG.HISTORY_MS;
+    let drop = 0;
+    while (drop < p.history.length - 1 && p.history[drop].t < cutoff) drop++;
+    if (drop) p.history.splice(0, drop);
+  }
+}
+
+// Position of a player at a past server time, interpolated from recorded history
+export function positionAt(
+  player: PlayerState,
+  t: number,
+): { x: number; y: number } {
+  const h = player.history;
+  if (h.length === 0 || t >= h[h.length - 1].t) return { x: player.x, y: player.y };
+  if (t <= h[0].t) return { x: h[0].x, y: h[0].y };
+  for (let i = h.length - 1; i > 0; i--) {
+    const a = h[i - 1];
+    const b = h[i];
+    if (t >= a.t) {
+      const k = b.t === a.t ? 1 : (t - a.t) / (b.t - a.t);
+      return { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k };
+    }
+  }
+  return { x: h[0].x, y: h[0].y };
+}
+
+// Bullets are tested against targets as the shooter saw them (rewound by the shooter's view lag)
 export function resolveCollisions(
   bullets: BulletState[],
   players: PlayerState[],
+  now: number,
 ): string[] {
   const removed: string[] = [];
   let write = 0;
@@ -365,8 +440,12 @@ export function resolveCollisions(
     let hit = false;
     for (const player of players) {
       if (player.id === bullet.ownerId) continue;
-      const dx = bullet.x - player.x;
-      const dy = bullet.y - player.y;
+      const pos =
+        bullet.viewLag > 0
+          ? positionAt(player, now - bullet.viewLag)
+          : { x: player.x, y: player.y };
+      const dx = bullet.x - pos.x;
+      const dy = bullet.y - pos.y;
       const threshold = bullet.radius + GAME_CONFIG.SHIP_RADIUS;
       if (dx * dx + dy * dy < threshold * threshold) {
         player.hp = Math.max(0, player.hp - bullet.damage);

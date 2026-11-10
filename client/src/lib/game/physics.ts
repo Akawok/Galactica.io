@@ -5,8 +5,17 @@ export const GAME_CONFIG = {
 	SHIP_RADIUS: 24,
 	MAX_HP: 100,
 	MAX_ENERGY: 100,
-	ENERGY_REGEN: 5 / 60
+	ENERGY_REGEN: 5 / 60,
+	TICK_MS: 1000 / 60,
+	BULLET_NORMAL_SPEED: 7,
+	BULLET_SPECIAL_SPEED: 5,
+	BULLET_RADIUS: 6
 };
+
+// Must match the server: cooldowns are counted in inputs (one input per tick)
+export function cooldownTicks(cooldownMs: number): number {
+	return Math.max(1, Math.round(cooldownMs / GAME_CONFIG.TICK_MS));
+}
 
 export interface PredictedPlayer {
 	x: number;

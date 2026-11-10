@@ -13,6 +13,8 @@ import {
   resolveCollisions,
   resolveShipCollisions,
   getSpawnPosition,
+  recordHistory,
+  resetShotState,
 } from "../services/game.service.js";
 import {
   recordMatchResult,
@@ -38,11 +40,15 @@ interface ClientInput {
   mouseAngle: number;
   leftClick: boolean;
   rightClick: boolean;
+  renderTime?: number;
 }
 
-const INPUT_BURST_MAX = 4;
-const MAX_QUEUE_LENGTH = 60;
-const BULLET_SYNC_INTERVAL = 6;
+// Inputs are consumed at most one per tick on average; credits let a player catch up after jitter
+const INPUT_BURST_MAX = 15;
+const MAX_QUEUE_LENGTH = 30;
+// Inputs still queued beyond this after a tick are dropped to keep input latency bounded
+const MAX_BACKLOG = 6;
+const MAX_CATCHUP_TICKS = 5;
 
 const ALLOWED_KEYS = new Set(["z", "q", "s", "d", "w", "a"]);
 
@@ -66,6 +72,7 @@ function sanitizeInput(raw: unknown): ClientInput | null {
     mouseAngle: input.mouseAngle as number,
     leftClick: input.leftClick === true,
     rightClick: input.rightClick === true,
+    renderTime: Number.isFinite(input.rt) ? (input.rt as number) : undefined,
   };
 }
 
@@ -80,6 +87,7 @@ function resetRound(room: RoomState) {
     player.hp = player.maxHp;
     player.energy = player.maxEnergy;
     player.angle = index === 0 ? 0 : Math.PI;
+    resetShotState(player);
     index++;
   }
 }
@@ -102,7 +110,13 @@ function buildStartPayload(room: RoomState) {
         sprite,
         bulletSprite,
         bulletSpriteSecondary,
+        primaryCooldown,
+        specialCooldown,
+        specialEnergyCost,
       }) => ({
+        primaryCooldown,
+        specialCooldown,
+        specialEnergyCost,
         id,
         username,
         x,
@@ -122,17 +136,18 @@ function buildStartPayload(room: RoomState) {
       mapWidth: GAME_CONFIG.MAP_WIDTH,
       mapHeight: GAME_CONFIG.MAP_HEIGHT,
     },
+    t: room.simTime ?? Date.now(),
   };
 }
 
 export function sendGameSnapshot(socket: Socket, room: RoomState) {
   socket.emit("game:start", buildStartPayload(room));
+  const t = room.simTime ?? Date.now();
   socket.emit("game:state", {
     players: [],
-    bulletsAdded: room.bullets.map(toBulletPayload),
+    bulletsAdded: room.bullets.map((b) => toBulletPayload(b, t)),
     bulletsRemoved: [],
-    bulletsUpdated: [],
-    tick: Date.now(),
+    t,
   });
 }
 
@@ -174,7 +189,9 @@ export function registerGameSocket(
       if (input.seq <= lastSeen) return;
       lastSeenSeq.set(entry.socket.id, input.seq);
       const queue = inputQueues.get(entry.socket.id);
-      if (queue && queue.length < MAX_QUEUE_LENGTH) queue.push(input);
+      if (!queue) return;
+      if (queue.length >= MAX_QUEUE_LENGTH) queue.shift();
+      queue.push(input);
     });
   }
 
@@ -184,21 +201,38 @@ export function registerGameSocket(
     io.to(roomId).emit("game:start", buildStartPayload(room));
   }, 500);
 
-  room.intervalId = setInterval(
-    makeTick(io, roomId, room),
-    GAME_CONFIG.TICK_RATE,
-  );
+  startLoop(io, roomId, room);
+}
+
+// Fixed-step loop locked to wall-clock time: tick N always represents start + N * TICK_RATE,
+// which keeps server time and simulation steps consistent for client interpolation.
+function startLoop(io: Server, roomId: string, room: RoomState) {
+  if (room.intervalId) clearInterval(room.intervalId);
+  const tick = makeTick(io, roomId, room);
+  let start = Date.now();
+  let ticksDone = 0;
+  room.intervalId = setInterval(() => {
+    const due = Math.floor((Date.now() - start) / GAME_CONFIG.TICK_RATE);
+    if (due - ticksDone > MAX_CATCHUP_TICKS) {
+      start += (due - ticksDone - MAX_CATCHUP_TICKS) * GAME_CONFIG.TICK_RATE;
+      ticksDone = due - MAX_CATCHUP_TICKS;
+    }
+    while (ticksDone < due && room.status === "playing") {
+      ticksDone++;
+      tick(Math.round(start + ticksDone * GAME_CONFIG.TICK_RATE));
+    }
+  }, 4);
 }
 
 function makeTick(io: Server, roomId: string, room: RoomState) {
-  let tickNo = 0;
-  return () => {
+  return (now: number) => {
     if (room.status !== "playing") return;
-    tickNo++;
+    room.simTime = now;
 
-    const now = Date.now();
     const players = Array.from(room.players.values());
     const added: BulletPayload[] = [];
+
+    const removed = moveBullets(room.bullets);
 
     for (const player of players) {
       const queue = inputQueues.get(player.id);
@@ -209,18 +243,24 @@ function makeTick(io: Server, roomId: string, room: RoomState) {
 
       if (queue && queue.length > 0) {
         const take = Math.min(queue.length, credit);
-        const start = queue.length - take;
-        for (let i = start; i < queue.length; i++) {
-          const input = queue[i];
+        for (const input of queue.splice(0, take)) {
+          if (input.renderTime !== undefined) {
+            player.viewLag = Math.min(
+              GAME_CONFIG.MAX_REWIND_MS,
+              Math.max(0, now - input.renderTime),
+            );
+          }
           const shots = applyInput(player, input, now);
           for (const shot of shots) {
             room.bullets.push(shot);
-            added.push(toBulletPayload(shot));
+            added.push(toBulletPayload(shot, now));
           }
           lastProcessedSeq.set(player.id, input.seq);
         }
         credit -= take;
-        queue.length = 0;
+        if (queue.length > MAX_BACKLOG) {
+          queue.splice(0, queue.length - MAX_BACKLOG);
+        }
       }
       inputCredits.set(player.id, credit);
 
@@ -231,31 +271,18 @@ function makeTick(io: Server, roomId: string, room: RoomState) {
     }
 
     resolveShipCollisions(players);
+    recordHistory(players, now);
 
-    const removed = moveBullets(room.bullets);
-    const hitRemoved = resolveCollisions(room.bullets, players);
+    const hitRemoved = resolveCollisions(room.bullets, players, now);
     if (hitRemoved.length) removed.push(...hitRemoved);
 
-    const bulletsUpdated =
-      tickNo % BULLET_SYNC_INTERVAL === 0
-        ? room.bullets.map((b) => ({ id: b.id, x: b.x, y: b.y }))
-        : [];
-
-    const playerDeltas = buildPlayerDeltas(room, players);
-    if (
-      playerDeltas.length ||
-      added.length ||
-      removed.length ||
-      bulletsUpdated.length
-    ) {
-      io.to(roomId).emit("game:state", {
-        players: playerDeltas,
-        bulletsAdded: added,
-        bulletsRemoved: removed,
-        bulletsUpdated,
-        tick: now,
-      });
-    }
+    // Sent every tick, even when empty: clients use it as their time reference
+    io.to(roomId).emit("game:state", {
+      players: buildPlayerDeltas(room, players),
+      bulletsAdded: added,
+      bulletsRemoved: removed,
+      t: now,
+    });
 
     const dead = players.filter((p) => p.hp <= 0);
     if (dead.length > 0) {
@@ -268,23 +295,28 @@ function makeTick(io: Server, roomId: string, room: RoomState) {
 
 interface BulletPayload {
   id: string;
+  ownerId: string;
+  seq: number;
   x: number;
   y: number;
   vx: number;
   vy: number;
-  angle: number;
+  t: number;
   type: "normal" | "special";
   sprite: string;
 }
 
-function toBulletPayload(b: BulletState): BulletPayload {
+// Position (x, y) is the bullet position at server time t; it then moves (vx, vy) per tick
+function toBulletPayload(b: BulletState, t: number): BulletPayload {
   return {
     id: b.id,
+    ownerId: b.ownerId,
+    seq: b.seq,
     x: b.x,
     y: b.y,
     vx: b.vx,
     vy: b.vy,
-    angle: Math.atan2(b.vy, b.vx),
+    t,
     type: b.type,
     sprite: b.sprite,
   };
@@ -298,6 +330,7 @@ interface PlayerDelta {
   hp?: number;
   energy?: number;
   lastProcessedSeq?: number;
+  inputClock?: number;
 }
 
 function buildPlayerDeltas(
@@ -331,8 +364,10 @@ function buildPlayerDeltas(
       changed = true;
     }
     const seq = lastProcessedSeq.get(p.id) ?? 0;
+    if (!prev || prev.seq !== seq) changed = true;
     if (changed) {
       delta.lastProcessedSeq = seq;
+      delta.inputClock = p.inputClock;
       deltas.push(delta);
       room.lastSent.set(p.id, {
         x: p.x,
@@ -340,6 +375,7 @@ function buildPlayerDeltas(
         angle: p.angle,
         hp: p.hp,
         energy: p.energy,
+        seq,
       });
     }
   }
@@ -392,17 +428,9 @@ async function endRound(
         ({ id, x, y, angle, hp, energy }) => ({ id, x, y, angle, hp, energy }),
       );
       io.to(roomId).emit("game:roundStart", { scores, players: spawnStates });
-      restartLoop(io, roomId, room);
+      startLoop(io, roomId, room);
     }, 3000);
   }
-}
-
-function restartLoop(io: Server, roomId: string, room: RoomState) {
-  if (room.intervalId) clearInterval(room.intervalId);
-  room.intervalId = setInterval(
-    makeTick(io, roomId, room),
-    GAME_CONFIG.TICK_RATE,
-  );
 }
 
 async function endMatch(

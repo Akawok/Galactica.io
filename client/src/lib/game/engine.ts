@@ -11,8 +11,24 @@ import {
 	type Ticker
 } from 'pixi.js';
 import { Starfield } from './starfield';
-import { GAME_CONFIG, applyMovement, type PredictedInput, type PredictedPlayer } from './physics';
+import {
+	GAME_CONFIG,
+	applyMovement,
+	cooldownTicks,
+	type PredictedInput,
+	type PredictedPlayer
+} from './physics';
 import type { Socket } from 'socket.io-client';
+
+// Remote entities are rendered this far in the past so there are always two snapshots to blend
+const INTERP_DELAY_MS = 100;
+// When snapshots stop arriving, remote ships keep moving on their last velocity for at most this long
+const MAX_EXTRAPOLATION_MS = 100;
+const SAMPLE_BUFFER_MS = 1000;
+const MAX_STEPS_PER_FRAME = 4;
+// Fraction of a reconciliation error still visible after one 60fps frame
+const CORRECTION_DECAY = 0.85;
+const CORRECTION_SNAP_DISTANCE = 120;
 
 interface ThrusterParticle {
 	x: number;
@@ -43,25 +59,40 @@ interface PlayerDelta {
 	hp?: number;
 	energy?: number;
 	lastProcessedSeq?: number;
+	inputClock?: number;
 }
 interface BulletPayload {
 	id: string;
+	ownerId: string;
+	seq: number;
 	x: number;
 	y: number;
 	vx: number;
 	vy: number;
-	angle: number;
+	t: number;
 	type: string;
 	sprite: string;
 }
+interface StartPlayer extends PlayerState {
+	username: string;
+	sprite: string;
+	bulletSprite: string;
+	bulletSpriteSecondary: string;
+	primaryCooldown?: number;
+	specialCooldown?: number;
+	specialEnergyCost?: number;
+}
 interface GameStartPayload {
-	players: (PlayerState & {
-		username: string;
-		sprite: string;
-		bulletSprite: string;
-		bulletSpriteSecondary: string;
-	})[];
+	players: StartPlayer[];
 	config: { mapWidth: number; mapHeight: number };
+	t?: number;
+}
+
+interface Sample {
+	t: number;
+	x: number;
+	y: number;
+	angle: number;
 }
 
 interface PlayerVisual {
@@ -73,19 +104,30 @@ interface PlayerVisual {
 	energyBg: Graphics;
 	nameText: Text;
 	state: PlayerState & { username: string; sprite: string };
-	targetX: number;
-	targetY: number;
-	targetAngle: number;
+	// Latest authoritative values from the server
+	known: { x: number; y: number; angle: number };
+	samples: Sample[];
+	displayAngle: number;
 	isMoving: boolean;
 	thrustAcc: number;
 }
 
 interface BulletVisual {
 	visual: Sprite | Graphics;
-	simX: number;
-	simY: number;
+	radius: number;
+	// Own bullets live on the local input timeline (x0, y0 at input step0),
+	// remote bullets on the delayed server timeline (x0, y0 at server time t0)
+	own: boolean;
+	x0: number;
+	y0: number;
 	vx: number;
 	vy: number;
+	step0: number;
+	t0: number;
+	seq: number;
+	confirmed: boolean;
+	removeAt: number | null;
+	predictedHit: boolean;
 }
 
 const ANIMATED_SPRITES: Record<string, string[]> = {
@@ -99,6 +141,21 @@ const ANIMATED_SPRITES: Record<string, string[]> = {
 
 function isAnimated(spriteName: string): spriteName is keyof typeof ANIMATED_SPRITES {
 	return spriteName in ANIMATED_SPRITES;
+}
+
+function lerpAngle(a: number, b: number, k: number): number {
+	let d = b - a;
+	while (d > Math.PI) d -= Math.PI * 2;
+	while (d < -Math.PI) d += Math.PI * 2;
+	return a + d * k;
+}
+
+function clampX(x: number): number {
+	return Math.max(GAME_CONFIG.SHIP_RADIUS, Math.min(GAME_CONFIG.MAP_WIDTH - GAME_CONFIG.SHIP_RADIUS, x));
+}
+
+function clampY(y: number): number {
+	return Math.max(GAME_CONFIG.SHIP_RADIUS, Math.min(GAME_CONFIG.MAP_HEIGHT - GAME_CONFIG.SHIP_RADIUS, y));
 }
 
 export class GameEngine {
@@ -134,13 +191,33 @@ export class GameEngine {
 	private mapWidth = 1280;
 	private mapHeight = 720;
 
-	private inputIntervalId: ReturnType<typeof setInterval> | null = null;
-	private inputSeq = 0;
+	// Server clock estimate: serverTime ≈ performance.now() + clockOffset
+	private clockOffset = 0;
+	private hasClock = false;
 
+	private inputSeq = 0;
+	private stepAcc = 0;
+	private paused = false;
 	private predicted: PredictedPlayer = { x: 0, y: 0, angle: 0, speed: 3 };
+	private prevPredicted = { x: 0, y: 0 };
+	private correction = { x: 0, y: 0 };
 	private pendingInputs: { seq: number; input: PredictedInput }[] = [];
 	private hasPredictedState = false;
 	private static readonly MAX_PENDING_INPUTS = 200;
+
+	private myLoadout = {
+		primaryCooldown: 200,
+		specialCooldown: 2000,
+		specialEnergyCost: 20,
+		bulletSprite: '',
+		bulletSpriteSecondary: ''
+	};
+	// Shot clock = inputs sent this round; seq - roundBaseSeq mirrors the server's inputClock
+	private roundBaseSeq = 0;
+	private lastNormalShotClock = -Infinity;
+	private lastSpecialShotClock = -Infinity;
+	private prevRightClick = false;
+	private unackedSpecials: { seq: number; cost: number }[] = [];
 
 	constructor(socket: Socket, myId: string, isSpectator: boolean) {
 		this.socket = socket;
@@ -172,15 +249,13 @@ export class GameEngine {
 
 		this.app.ticker.add((ticker: Ticker) => {
 			const dt = ticker.deltaTime;
+			this.runPrediction(ticker.deltaMS);
+			const renderTime = this.renderTime();
 			this.starfield.update(dt);
-			this.interpolatePlayers(dt);
-			this.interpolateBullets(dt);
+			this.renderPlayers(dt, renderTime);
+			this.renderBullets(renderTime);
 			this.updateThrusterParticles(dt);
 		});
-
-		if (!this.isSpectator) {
-			this.inputIntervalId = setInterval(() => this.sendInput(), 1000 / 60);
-		}
 
 		return this;
 	}
@@ -222,10 +297,29 @@ export class GameEngine {
 		canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 	}
 
+	private serverNow(): number {
+		return performance.now() + this.clockOffset;
+	}
+
+	private renderTime(): number {
+		return this.serverNow() - INTERP_DELAY_MS;
+	}
+
+	private updateClock(serverTime: number) {
+		const sample = serverTime - performance.now();
+		// Large jumps (first packet, tab back from background) reset the estimate, otherwise smooth it
+		if (!this.hasClock || sample > this.clockOffset + 250 || sample < this.clockOffset - 1000) {
+			this.clockOffset = sample;
+			this.hasClock = true;
+		} else {
+			this.clockOffset += (sample - this.clockOffset) * 0.02;
+		}
+	}
+
 	private getBlockers(): { x: number; y: number }[] {
 		const blockers: { x: number; y: number }[] = [];
 		for (const [id, v] of this.playerVisuals) {
-			if (id !== this.myId) blockers.push({ x: v.targetX, y: v.targetY });
+			if (id !== this.myId) blockers.push({ x: v.known.x, y: v.known.y });
 		}
 		return blockers;
 	}
@@ -245,7 +339,20 @@ export class GameEngine {
 		this.mouseAngle = Math.atan2(dy, dx);
 	}
 
-	private sendInput() {
+	private runPrediction(deltaMS: number) {
+		if (this.isSpectator || !this.hasPredictedState || this.paused) return;
+		this.stepAcc += deltaMS;
+		let steps = 0;
+		while (this.stepAcc >= GAME_CONFIG.TICK_MS && steps < MAX_STEPS_PER_FRAME) {
+			this.step();
+			this.stepAcc -= GAME_CONFIG.TICK_MS;
+			steps++;
+		}
+		// Too far behind (tab in background): do not flood the server with catch-up inputs
+		if (this.stepAcc >= GAME_CONFIG.TICK_MS) this.stepAcc = 0;
+	}
+
+	private step() {
 		this.inputSeq++;
 		this.updateMouseAngle();
 		const keys = Array.from(this.keys);
@@ -256,16 +363,114 @@ export class GameEngine {
 			keys,
 			mouseAngle: this.mouseAngle,
 			leftClick: this.leftClick,
-			rightClick: this.rightClick
+			rightClick: this.rightClick,
+			rt: Math.round(this.renderTime())
 		});
 
-		if (this.hasPredictedState) {
-			applyMovement(this.predicted, input, this.getBlockers());
-			this.pendingInputs.push({ seq: this.inputSeq, input });
-			if (this.pendingInputs.length > GameEngine.MAX_PENDING_INPUTS) {
-				this.pendingInputs.splice(0, this.pendingInputs.length - GameEngine.MAX_PENDING_INPUTS);
-			}
+		this.prevPredicted.x = this.predicted.x;
+		this.prevPredicted.y = this.predicted.y;
+		applyMovement(this.predicted, input, this.getBlockers());
+		this.pendingInputs.push({ seq: this.inputSeq, input });
+		if (this.pendingInputs.length > GameEngine.MAX_PENDING_INPUTS) {
+			this.pendingInputs.splice(0, this.pendingInputs.length - GameEngine.MAX_PENDING_INPUTS);
 		}
+
+		this.predictShots(this.inputSeq);
+	}
+
+	private predictedEnergy(): number {
+		const me = this.playerVisuals.get(this.myId);
+		const base = me?.state.energy ?? 0;
+		return base - this.unackedSpecials.reduce((sum, s) => sum + s.cost, 0);
+	}
+
+	private predictShots(seq: number) {
+		const clock = seq - this.roundBaseSeq;
+		const cos = Math.cos(this.predicted.angle);
+		const sin = Math.sin(this.predicted.angle);
+
+		if (
+			this.leftClick &&
+			clock - this.lastNormalShotClock >= cooldownTicks(this.myLoadout.primaryCooldown)
+		) {
+			this.lastNormalShotClock = clock;
+			const muzzle = GAME_CONFIG.SHIP_RADIUS + GAME_CONFIG.BULLET_RADIUS + 1;
+			this.spawnOwnBullet(`${this.myId}:${seq}:n`, seq, {
+				x: this.predicted.x + cos * muzzle,
+				y: this.predicted.y + sin * muzzle,
+				vx: cos * GAME_CONFIG.BULLET_NORMAL_SPEED,
+				vy: sin * GAME_CONFIG.BULLET_NORMAL_SPEED,
+				type: 'normal',
+				sprite: this.myLoadout.bulletSprite
+			});
+		}
+
+		const specialPressed = this.rightClick && !this.prevRightClick;
+		const cost = this.myLoadout.specialEnergyCost;
+		if (
+			specialPressed &&
+			clock - this.lastSpecialShotClock >= cooldownTicks(this.myLoadout.specialCooldown) &&
+			this.predictedEnergy() >= cost
+		) {
+			this.lastSpecialShotClock = clock;
+			this.unackedSpecials.push({ seq, cost });
+			const muzzle = GAME_CONFIG.SHIP_RADIUS + GAME_CONFIG.BULLET_RADIUS * 2 + 1;
+			this.spawnOwnBullet(`${this.myId}:${seq}:s`, seq, {
+				x: this.predicted.x + cos * muzzle,
+				y: this.predicted.y + sin * muzzle,
+				vx: cos * GAME_CONFIG.BULLET_SPECIAL_SPEED,
+				vy: sin * GAME_CONFIG.BULLET_SPECIAL_SPEED,
+				type: 'special',
+				sprite: this.myLoadout.bulletSpriteSecondary
+			});
+		}
+		this.prevRightClick = this.rightClick;
+	}
+
+	private createBulletGraphic(type: string, sprite: string, angle: number): Sprite | Graphics {
+		const texture = Assets.get(`/assets/${sprite}.png`);
+		const isSpecial = type === 'special';
+		let visual: Sprite | Graphics;
+		if (texture) {
+			const spr = new Sprite(texture);
+			spr.anchor.set(0.5);
+			spr.width = isSpecial ? 24 : 16;
+			spr.height = isSpecial ? 24 : 16;
+			spr.rotation = angle;
+			visual = spr;
+		} else {
+			const g = new Graphics();
+			g.circle(0, 0, isSpecial ? 6 : 3).fill({ color: isSpecial ? 0xff8800 : 0x00ffff });
+			visual = g;
+		}
+		this.app.stage.addChild(visual);
+		return visual;
+	}
+
+	private spawnOwnBullet(
+		id: string,
+		seq: number,
+		b: { x: number; y: number; vx: number; vy: number; type: string; sprite: string }
+	) {
+		if (this.bulletVisuals.has(id)) return;
+		const visual = this.createBulletGraphic(b.type, b.sprite, Math.atan2(b.vy, b.vx));
+		visual.x = b.x;
+		visual.y = b.y;
+		this.bulletVisuals.set(id, {
+			visual,
+			radius: b.type === 'special' ? GAME_CONFIG.BULLET_RADIUS * 2 : GAME_CONFIG.BULLET_RADIUS,
+			own: true,
+			x0: b.x,
+			y0: b.y,
+			vx: b.vx,
+			vy: b.vy,
+			step0: seq,
+			t0: 0,
+			seq,
+			confirmed: false,
+			removeAt: null,
+			predictedHit: false
+		});
 	}
 
 	async onGameStart(payload: GameStartPayload) {
@@ -275,6 +480,7 @@ export class GameEngine {
 			this.app.renderer.resize(this.mapWidth, this.mapHeight);
 			this.scoreText.x = this.mapWidth / 2;
 		}
+		if (payload.t !== undefined) this.updateClock(payload.t);
 
 		const spritesToLoad = new Set<string>();
 		for (const p of payload.players) {
@@ -292,6 +498,7 @@ export class GameEngine {
 		await Promise.all(Array.from(spritesToLoad).map((url) => Assets.load(url).catch(() => null)));
 
 		for (const p of payload.players) {
+			if (this.playerVisuals.has(p.id)) continue;
 			this.createPlayerVisual(p);
 		}
 	}
@@ -323,7 +530,7 @@ export class GameEngine {
 		return spr;
 	}
 
-	private createPlayerVisual(p: PlayerState & { username: string; sprite: string }) {
+	private createPlayerVisual(p: StartPlayer) {
 		const container = new Container();
 
 		const shipSprite = this.createShipSprite(p.sprite, p.id);
@@ -347,10 +554,11 @@ export class GameEngine {
 		container.addChild(hitbox, hpBg, hpBar, energyBg, energyBar, shipSprite, nameText);
 		container.x = p.x;
 		container.y = p.y;
+		shipSprite.rotation = p.angle + Math.PI / 2;
 
 		this.app.stage.addChild(container);
 
-		this.playerVisuals.set(p.id, {
+		const visual: PlayerVisual = {
 			container,
 			sprite: shipSprite,
 			hpBar,
@@ -359,18 +567,29 @@ export class GameEngine {
 			energyBg,
 			nameText,
 			state: { ...p },
-			targetX: p.x,
-			targetY: p.y,
-			targetAngle: p.angle,
+			known: { x: p.x, y: p.y, angle: p.angle },
+			samples: [],
+			displayAngle: p.angle,
 			isMoving: false,
 			thrustAcc: 0
-		});
+		};
+		this.playerVisuals.set(p.id, visual);
+		this.updateBars(visual);
 
-		if (p.id === this.myId) {
+		if (p.id === this.myId && !this.isSpectator) {
 			this.predicted.x = p.x;
 			this.predicted.y = p.y;
 			this.predicted.angle = p.angle;
 			this.predicted.speed = p.speed ?? 3;
+			this.prevPredicted.x = p.x;
+			this.prevPredicted.y = p.y;
+			this.myLoadout = {
+				primaryCooldown: p.primaryCooldown ?? this.myLoadout.primaryCooldown,
+				specialCooldown: p.specialCooldown ?? this.myLoadout.specialCooldown,
+				specialEnergyCost: p.specialEnergyCost ?? this.myLoadout.specialEnergyCost,
+				bulletSprite: p.bulletSprite,
+				bulletSpriteSecondary: p.bulletSpriteSecondary
+			};
 			this.hasPredictedState = true;
 		}
 	}
@@ -384,87 +603,132 @@ export class GameEngine {
 		}
 	}
 
+	private isLocal(id: string): boolean {
+		return id === this.myId && this.hasPredictedState;
+	}
+
 	onGameState(state: {
 		players: PlayerDelta[];
 		bulletsAdded: BulletPayload[];
 		bulletsRemoved: string[];
-		bulletsUpdated?: { id: string; x: number; y: number }[];
+		t: number;
 	}) {
+		if (typeof state.t === 'number') this.updateClock(state.t);
+		const t = state.t;
+
+		let ackedSeq: number | null = null;
+		let serverClock: number | null = null;
 		for (const p of state.players) {
 			const visual = this.playerVisuals.get(p.id);
 			if (!visual) continue;
-
-			if (p.id === this.myId && this.hasPredictedState) {
-				if (p.x !== undefined) this.predicted.x = p.x;
-				if (p.y !== undefined) this.predicted.y = p.y;
-				if (p.angle !== undefined) this.predicted.angle = p.angle;
-
-				const acked = p.lastProcessedSeq ?? 0;
-				this.pendingInputs = this.pendingInputs.filter((pi) => pi.seq > acked);
-				const blockers = this.getBlockers();
-				for (const pending of this.pendingInputs) {
-					applyMovement(this.predicted, pending.input, blockers);
-				}
-			} else {
-				const prevX = visual.container.x;
-				const prevY = visual.container.y;
-				if (p.x !== undefined) visual.targetX = p.x;
-				if (p.y !== undefined) visual.targetY = p.y;
-				if (p.angle !== undefined) visual.targetAngle = p.angle;
-				visual.isMoving =
-					Math.abs((p.x ?? prevX) - prevX) > 0.5 || Math.abs((p.y ?? prevY) - prevY) > 0.5;
-				this.setShipMoving(visual, visual.isMoving);
-			}
-
+			if (p.x !== undefined) visual.known.x = p.x;
+			if (p.y !== undefined) visual.known.y = p.y;
+			if (p.angle !== undefined) visual.known.angle = p.angle;
 			if (p.hp !== undefined) visual.state.hp = p.hp;
 			if (p.energy !== undefined) visual.state.energy = p.energy;
 			if (p.hp !== undefined || p.energy !== undefined) this.updateBars(visual);
+			if (this.isLocal(p.id) && p.lastProcessedSeq !== undefined) {
+				ackedSeq = p.lastProcessedSeq;
+				serverClock = p.inputClock ?? null;
+			}
+		}
+
+		// Every snapshot is a sample for every remote ship (unchanged fields are omitted by the server)
+		for (const [id, visual] of this.playerVisuals) {
+			if (this.isLocal(id)) continue;
+			visual.samples.push({ t, x: visual.known.x, y: visual.known.y, angle: visual.known.angle });
+			const cutoff = t - SAMPLE_BUFFER_MS;
+			while (visual.samples.length > 2 && visual.samples[0].t < cutoff) visual.samples.shift();
 		}
 
 		for (const id of state.bulletsRemoved) {
 			const entry = this.bulletVisuals.get(id);
-			if (entry) {
-				entry.visual.destroy();
-				this.bulletVisuals.delete(id);
-			}
+			if (!entry) continue;
+			if (entry.own) this.destroyBullet(id);
+			else entry.removeAt = t;
 		}
 
-		for (const b of state.bulletsAdded) {
-			if (this.bulletVisuals.has(b.id)) continue;
-			const texture = Assets.get(`/assets/${b.sprite}.png`);
-			const isSpecial = b.type === 'special';
-			let visual: Sprite | Graphics;
-			if (texture) {
-				const spr = new Sprite(texture);
-				spr.anchor.set(0.5);
-				spr.width = isSpecial ? 24 : 16;
-				spr.height = isSpecial ? 24 : 16;
-				spr.rotation = b.angle ?? 0;
-				visual = spr;
-			} else {
-				const g = new Graphics();
-				g.circle(0, 0, isSpecial ? 6 : 3).fill({ color: isSpecial ? 0xff8800 : 0x00ffff });
-				visual = g;
+		for (const b of state.bulletsAdded) this.addServerBullet(b);
+
+		if (ackedSeq !== null) this.reconcile(ackedSeq, serverClock);
+	}
+
+	private addServerBullet(b: BulletPayload) {
+		const own = this.isLocal(b.ownerId);
+		const existing = this.bulletVisuals.get(b.id);
+		if (existing) {
+			if (own) {
+				existing.x0 = b.x;
+				existing.y0 = b.y;
+				existing.vx = b.vx;
+				existing.vy = b.vy;
+				existing.confirmed = true;
 			}
-			visual.x = b.x;
-			visual.y = b.y;
-			this.app.stage.addChild(visual);
-			this.bulletVisuals.set(b.id, {
-				visual,
-				simX: b.x,
-				simY: b.y,
-				vx: b.vx ?? 0,
-				vy: b.vy ?? 0
-			});
+			return;
+		}
+		const visual = this.createBulletGraphic(b.type, b.sprite, Math.atan2(b.vy, b.vx));
+		visual.x = b.x;
+		visual.y = b.y;
+		this.bulletVisuals.set(b.id, {
+			visual,
+			radius: b.type === 'special' ? GAME_CONFIG.BULLET_RADIUS * 2 : GAME_CONFIG.BULLET_RADIUS,
+			own,
+			x0: b.x,
+			y0: b.y,
+			vx: b.vx,
+			vy: b.vy,
+			step0: b.seq,
+			t0: b.t,
+			seq: b.seq,
+			confirmed: true,
+			removeAt: null,
+			predictedHit: false
+		});
+	}
+
+	private destroyBullet(id: string) {
+		const entry = this.bulletVisuals.get(id);
+		if (!entry) return;
+		entry.visual.destroy();
+		this.bulletVisuals.delete(id);
+	}
+
+	private reconcile(ackedSeq: number, serverClock: number | null) {
+		const me = this.playerVisuals.get(this.myId);
+		if (!me) return;
+
+		const beforeX = this.predicted.x;
+		const beforeY = this.predicted.y;
+
+		this.predicted.x = me.known.x;
+		this.predicted.y = me.known.y;
+		this.predicted.angle = me.known.angle;
+		this.pendingInputs = this.pendingInputs.filter((pi) => pi.seq > ackedSeq);
+		const blockers = this.getBlockers();
+		for (const pending of this.pendingInputs) {
+			applyMovement(this.predicted, pending.input, blockers);
 		}
 
-		if (state.bulletsUpdated) {
-			for (const u of state.bulletsUpdated) {
-				const entry = this.bulletVisuals.get(u.id);
-				if (!entry) continue;
-				entry.simX = u.x;
-				entry.simY = u.y;
-			}
+		// Hide the correction by blending it out over a few frames instead of snapping
+		const dx = beforeX - this.predicted.x;
+		const dy = beforeY - this.predicted.y;
+		this.prevPredicted.x -= dx;
+		this.prevPredicted.y -= dy;
+		this.correction.x += dx;
+		this.correction.y += dy;
+		if (Math.hypot(this.correction.x, this.correction.y) > CORRECTION_SNAP_DISTANCE) {
+			this.correction.x = 0;
+			this.correction.y = 0;
+		}
+
+		this.unackedSpecials = this.unackedSpecials.filter((s) => s.seq > ackedSeq);
+
+		// The server skips inputs it had to drop, so realign our shot clock on its count
+		if (serverClock !== null && serverClock > 0) this.roundBaseSeq = ackedSeq - serverClock;
+
+		// Predicted shots the server processed without spawning were mispredicted
+		for (const [id, b] of this.bulletVisuals) {
+			if (b.own && !b.confirmed && b.seq <= ackedSeq) this.destroyBullet(id);
 		}
 	}
 
@@ -476,6 +740,10 @@ export class GameEngine {
 		this.scoreText.text = parts.join('  —  ');
 	}
 
+	pause() {
+		this.paused = true;
+	}
+
 	resetRound(
 		players?: { id: string; x: number; y: number; angle: number; hp: number; energy: number }[]
 	) {
@@ -485,6 +753,15 @@ export class GameEngine {
 		this.rightClick = false;
 		this.keys.clear();
 		this.pendingInputs = [];
+		this.unackedSpecials = [];
+		this.roundBaseSeq = this.inputSeq;
+		this.lastNormalShotClock = -Infinity;
+		this.lastSpecialShotClock = -Infinity;
+		this.prevRightClick = false;
+		this.correction.x = 0;
+		this.correction.y = 0;
+		this.stepAcc = 0;
+		this.paused = false;
 
 		if (players) {
 			for (const p of players) {
@@ -494,34 +771,122 @@ export class GameEngine {
 				visual.state.energy = p.energy;
 				visual.container.x = p.x;
 				visual.container.y = p.y;
-				visual.targetX = p.x;
-				visual.targetY = p.y;
-				visual.targetAngle = p.angle;
+				visual.known = { x: p.x, y: p.y, angle: p.angle };
+				visual.samples = [];
+				visual.displayAngle = p.angle;
 				visual.sprite.rotation = p.angle + Math.PI / 2;
 				visual.isMoving = false;
 				this.setShipMoving(visual, false);
 				this.updateBars(visual);
 
-				if (p.id === this.myId) {
+				if (this.isLocal(p.id)) {
 					this.predicted.x = p.x;
 					this.predicted.y = p.y;
 					this.predicted.angle = p.angle;
+					this.prevPredicted.x = p.x;
+					this.prevPredicted.y = p.y;
 				}
 			}
 		}
 	}
 
-	private static smoothing(base: number, dt: number): number {
-		return 1 - Math.pow(1 - base, dt);
+	private sampleAt(v: PlayerVisual, renderTime: number): Sample {
+		const s = v.samples;
+		if (s.length === 0) return { t: renderTime, ...v.known };
+		if (renderTime <= s[0].t) return s[0];
+
+		const last = s[s.length - 1];
+		if (renderTime >= last.t) {
+			if (s.length < 2) return last;
+			const prev = s[s.length - 2];
+			const span = last.t - prev.t;
+			if (span <= 0) return last;
+			const ahead = Math.min(renderTime - last.t, MAX_EXTRAPOLATION_MS);
+			return {
+				t: renderTime,
+				x: clampX(last.x + ((last.x - prev.x) / span) * ahead),
+				y: clampY(last.y + ((last.y - prev.y) / span) * ahead),
+				angle: last.angle
+			};
+		}
+
+		for (let i = s.length - 1; i > 0; i--) {
+			const a = s[i - 1];
+			const b = s[i];
+			if (renderTime >= a.t) {
+				const k = b.t === a.t ? 1 : (renderTime - a.t) / (b.t - a.t);
+				return {
+					t: renderTime,
+					x: a.x + (b.x - a.x) * k,
+					y: a.y + (b.y - a.y) * k,
+					angle: lerpAngle(a.angle, b.angle, k)
+				};
+			}
+		}
+		return s[0];
 	}
 
-	private interpolateBullets(dt: number) {
-		const k = GameEngine.smoothing(0.35, dt);
-		for (const entry of this.bulletVisuals.values()) {
-			entry.simX += entry.vx * dt;
-			entry.simY += entry.vy * dt;
-			entry.visual.x += (entry.simX - entry.visual.x) * k;
-			entry.visual.y += (entry.simY - entry.visual.y) * k;
+	private renderPlayers(dt: number, renderTime: number) {
+		const decay = Math.pow(CORRECTION_DECAY, dt);
+		this.correction.x *= decay;
+		this.correction.y *= decay;
+
+		for (const [id, v] of this.playerVisuals) {
+			if (this.isLocal(id)) {
+				const alpha = Math.min(1, this.stepAcc / GAME_CONFIG.TICK_MS);
+				v.container.x =
+					this.prevPredicted.x + (this.predicted.x - this.prevPredicted.x) * alpha + this.correction.x;
+				v.container.y =
+					this.prevPredicted.y + (this.predicted.y - this.prevPredicted.y) * alpha + this.correction.y;
+				v.displayAngle = this.predicted.angle;
+				v.sprite.rotation = this.predicted.angle + Math.PI / 2;
+				continue;
+			}
+			const sample = this.sampleAt(v, renderTime);
+			const moved = Math.hypot(sample.x - v.container.x, sample.y - v.container.y);
+			v.isMoving = moved > 0.3 * dt;
+			this.setShipMoving(v, v.isMoving);
+			v.container.x = sample.x;
+			v.container.y = sample.y;
+			v.displayAngle = sample.angle;
+			v.sprite.rotation = sample.angle + Math.PI / 2;
+		}
+	}
+
+	private renderBullets(renderTime: number) {
+		const alpha = Math.min(1, this.stepAcc / GAME_CONFIG.TICK_MS);
+		for (const [id, b] of this.bulletVisuals) {
+			let elapsed: number;
+			if (b.own) {
+				// Same time base as the local ship, drawn between steps inputSeq - 1 and inputSeq
+				elapsed = this.inputSeq - 1 + alpha - b.step0;
+			} else {
+				if (b.removeAt !== null && renderTime >= b.removeAt) {
+					this.destroyBullet(id);
+					continue;
+				}
+				elapsed = (renderTime - b.t0) / GAME_CONFIG.TICK_MS;
+			}
+			const x = b.x0 + b.vx * elapsed;
+			const y = b.y0 + b.vy * elapsed;
+			b.visual.x = x;
+			b.visual.y = y;
+
+			const inside = elapsed >= 0 && x > 0 && x < this.mapWidth && y > 0 && y < this.mapHeight;
+			if (b.own && inside && !b.predictedHit) {
+				// The server tests our shots against targets as we see them, so a visual hit here is a hit there
+				for (const [pid, pv] of this.playerVisuals) {
+					if (pid === this.myId) continue;
+					const threshold = b.radius + GAME_CONFIG.SHIP_RADIUS;
+					const dx = x - pv.container.x;
+					const dy = y - pv.container.y;
+					if (dx * dx + dy * dy < threshold * threshold) {
+						b.predictedHit = true;
+						break;
+					}
+				}
+			}
+			b.visual.visible = inside && !b.predictedHit;
 		}
 	}
 
@@ -551,30 +916,19 @@ export class GameEngine {
 	private updateThrusterParticles(dt: number) {
 		for (const [id, v] of this.playerVisuals) {
 			let moving = false;
-			let angle = 0;
-			let px = 0;
-			let py = 0;
-
-			if (id === this.myId && this.hasPredictedState) {
+			if (this.isLocal(id)) {
 				const k = this.keys;
 				moving = k.has('z') || k.has('w') || k.has('s') || k.has('q') || k.has('a') || k.has('d');
-				angle = this.predicted.angle;
-				px = this.predicted.x;
-				py = this.predicted.y;
-
 				this.setShipMoving(v, moving);
 			} else {
 				moving = v.isMoving;
-				angle = v.targetAngle;
-				px = v.container.x;
-				py = v.container.y;
 			}
 
 			if (!isAnimated(v.state.sprite) && moving) {
 				v.thrustAcc += dt;
 				while (v.thrustAcc >= 1) {
 					v.thrustAcc -= 1;
-					this.spawnThrusterParticles(px, py, angle);
+					this.spawnThrusterParticles(v.container.x, v.container.y, v.displayAngle);
 				}
 			} else {
 				v.thrustAcc = 0;
@@ -610,26 +964,6 @@ export class GameEngine {
 		}
 	}
 
-	private interpolatePlayers(dt: number) {
-		const k = GameEngine.smoothing(0.2, dt);
-		for (const [id, v] of this.playerVisuals) {
-			if (id === this.myId && this.hasPredictedState) {
-				v.container.x = this.predicted.x;
-				v.container.y = this.predicted.y;
-				v.sprite.rotation = this.predicted.angle + Math.PI / 2;
-				continue;
-			}
-			v.container.x += (v.targetX - v.container.x) * k;
-			v.container.y += (v.targetY - v.container.y) * k;
-
-			const targetRotation = v.targetAngle + Math.PI / 2;
-			let da = targetRotation - v.sprite.rotation;
-			while (da > Math.PI) da -= Math.PI * 2;
-			while (da < -Math.PI) da += Math.PI * 2;
-			v.sprite.rotation += da * k;
-		}
-	}
-
 	private updateBars(v: PlayerVisual) {
 		const hpRatio = Math.max(0, v.state.hp / (v.state.maxHp ?? 100));
 		const energyRatio = Math.max(0, v.state.energy / (v.state.maxEnergy ?? 100));
@@ -648,10 +982,6 @@ export class GameEngine {
 	}
 
 	destroy() {
-		if (this.inputIntervalId !== null) {
-			clearInterval(this.inputIntervalId);
-			this.inputIntervalId = null;
-		}
 		window.removeEventListener('keydown', this.onKeyDown);
 		window.removeEventListener('keyup', this.onKeyUp);
 		window.removeEventListener('blur', this.onBlur);
