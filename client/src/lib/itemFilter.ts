@@ -6,7 +6,6 @@ export interface Item {
 	price: number;
 	description: string;
 	sprite: string;
-	stats: Record<string, number>;
 }
 
 export type ItemTab = 'ship' | 'primary' | 'secondary';

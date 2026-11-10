@@ -3,37 +3,106 @@ import { User } from "../models/User.js";
 import { Game } from "../models/Game.js";
 import { GAME_CONFIG, applyXP } from "./game.service.js";
 
+export type RewardNote = "limit" | "grey" | "upset";
+
 export interface MatchResult {
   points: number;
+  pointsGained: number;
   xp: number;
   level: number;
   xpGained: number;
   leveledUp: boolean;
   galactics: number;
   galacticsGained: number;
+  rewardNote?: RewardNote;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+export function greyMultiplier(
+  winnerLevel: number,
+  loserLevel: number,
+): number {
+  const gap = winnerLevel - loserLevel;
+  if (gap <= GAME_CONFIG.GREY_GAP_START) return 1;
+  if (gap >= GAME_CONFIG.GREY_GAP_ZERO) return 0;
+  return (
+    1 -
+    (gap - GAME_CONFIG.GREY_GAP_START) /
+      (GAME_CONFIG.GREY_GAP_ZERO - GAME_CONFIG.GREY_GAP_START)
+  );
+}
+
+export function upsetXpBonus(winnerLevel: number, loserLevel: number): number {
+  const gap = loserLevel - winnerLevel;
+  if (gap <= 0) return 0;
+  return Math.min(
+    GAME_CONFIG.UPSET_XP_BONUS_MAX,
+    gap * GAME_CONFIG.UPSET_XP_BONUS_PER_LEVEL,
+  );
+}
+
+// Must run before the current match is saved, otherwise it counts itself
+async function rewardedMatchesToday(a: string, b: string): Promise<number> {
+  return Game.countDocuments({
+    "players.userId": {
+      $all: [new mongoose.Types.ObjectId(a), new mongoose.Types.ObjectId(b)],
+    },
+    endedAt: { $gte: new Date(Date.now() - DAY_MS) },
+  });
 }
 
 export async function recordMatchResult(opts: {
   winner: { socketId: string; userId: string };
   loser?: { socketId: string; userId: string };
-  awardXP: boolean;
 }): Promise<Map<string, MatchResult>> {
   const results = new Map<string, MatchResult>();
-  const tasks: Promise<unknown>[] = [];
+  const winnerValid = mongoose.Types.ObjectId.isValid(opts.winner.userId);
+  const loserValid =
+    !!opts.loser && mongoose.Types.ObjectId.isValid(opts.loser.userId);
 
-  if (mongoose.Types.ObjectId.isValid(opts.winner.userId)) {
-    tasks.push(
-      updateWinner(opts.winner.userId, opts.awardXP).then((res) => {
-        if (res) results.set(opts.winner.socketId, res);
-      }),
-    );
+  let winnerMultiplier = 1;
+  let winnerXpBonus = 0;
+  let loserMultiplier = 1;
+  let winnerNote: RewardNote | undefined;
+  let loserNote: RewardNote | undefined;
+
+  if (winnerValid && loserValid) {
+    const [count, w, l] = await Promise.all([
+      rewardedMatchesToday(opts.winner.userId, opts.loser!.userId),
+      User.findById(opts.winner.userId).select("level").lean(),
+      User.findById(opts.loser!.userId).select("level").lean(),
+    ]);
+    if (count >= GAME_CONFIG.REWARDED_MATCHES_PER_OPPONENT) {
+      winnerMultiplier = loserMultiplier = 0;
+      winnerNote = loserNote = "limit";
+    } else {
+      winnerMultiplier = greyMultiplier(w?.level ?? 1, l?.level ?? 1);
+      winnerXpBonus = upsetXpBonus(w?.level ?? 1, l?.level ?? 1);
+      if (winnerMultiplier < 1) winnerNote = "grey";
+      else if (winnerXpBonus > 0) winnerNote = "upset";
+    }
   }
 
-  if (opts.loser && mongoose.Types.ObjectId.isValid(opts.loser.userId)) {
-    const loserSocketId = opts.loser.socketId;
+  const tasks: Promise<unknown>[] = [];
+  if (winnerValid) {
     tasks.push(
-      updateLoser(opts.loser.userId, opts.awardXP).then((res) => {
-        if (res) results.set(loserSocketId, res);
+      updateWinner(opts.winner.userId, winnerMultiplier, winnerXpBonus).then(
+        (res) => {
+          if (res)
+            results.set(opts.winner.socketId, {
+              ...res,
+              rewardNote: winnerNote,
+            });
+        },
+      ),
+    );
+  }
+  if (loserValid) {
+    const loserSocketId = opts.loser!.socketId;
+    tasks.push(
+      updateLoser(opts.loser!.userId, loserMultiplier).then((res) => {
+        if (res) results.set(loserSocketId, { ...res, rewardNote: loserNote });
       }),
     );
   }
@@ -44,14 +113,18 @@ export async function recordMatchResult(opts: {
 
 async function updateWinner(
   userId: string,
-  awardXP: boolean,
+  multiplier: number,
+  xpBonus: number,
 ): Promise<MatchResult | null> {
   const before = await User.findById(userId).select(
     "xp level stats.currentStreak stats.bestStreak",
   );
   if (!before) return null;
 
-  const xpGained = awardXP ? GAME_CONFIG.XP_PER_WIN : 0;
+  const xpGained = Math.round(
+    GAME_CONFIG.XP_PER_WIN * multiplier * (1 + xpBonus),
+  );
+  const pointsGained = Math.round(GAME_CONFIG.POINTS_PER_WIN * multiplier);
   const { level, xp, levelsGained } = applyXP(
     before.level,
     before.xp,
@@ -65,7 +138,7 @@ async function updateWinner(
     userId,
     {
       $inc: {
-        points: GAME_CONFIG.POINTS_PER_WIN,
+        points: pointsGained,
         galactics: galacticsGained,
         "stats.wins": 1,
         "stats.totalGames": 1,
@@ -83,6 +156,7 @@ async function updateWinner(
   if (!updated) return null;
   return {
     points: updated.points,
+    pointsGained,
     xp: updated.xp,
     level: updated.level,
     xpGained,
@@ -94,25 +168,25 @@ async function updateWinner(
 
 async function updateLoser(
   userId: string,
-  awardXP: boolean,
+  multiplier: number,
 ): Promise<MatchResult | null> {
   const before = await User.findById(userId).select("xp level");
   if (!before) return null;
 
-  const xpGained = awardXP ? GAME_CONFIG.XP_PER_LOSS : 0;
+  const xpGained = Math.round(GAME_CONFIG.XP_PER_LOSS * multiplier);
   const { level, xp, levelsGained } = applyXP(
     before.level,
     before.xp,
     xpGained,
   );
   const galacticsGained = levelsGained * GAME_CONFIG.GALACTICS_PER_LEVEL;
-  const creditsGained = awardXP ? GAME_CONFIG.CREDITS_PER_LOSS : 0;
+  const pointsGained = Math.round(GAME_CONFIG.CREDITS_PER_LOSS * multiplier);
 
   const updated = await User.findByIdAndUpdate(
     userId,
     {
       $inc: {
-        points: creditsGained,
+        points: pointsGained,
         galactics: galacticsGained,
         "stats.losses": 1,
         "stats.totalGames": 1,
@@ -125,6 +199,7 @@ async function updateLoser(
   if (!updated) return null;
   return {
     points: updated.points,
+    pointsGained,
     xp: updated.xp,
     level: updated.level,
     xpGained,

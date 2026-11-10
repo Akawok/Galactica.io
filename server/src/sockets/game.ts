@@ -3,8 +3,8 @@ import type {
   RoomState,
   PlayerState,
   BulletState,
-  LoadoutStats,
 } from "../services/game.service.js";
+import type { PlayerStats } from "../shared/attributes.js";
 import {
   GAME_CONFIG,
   createPlayerState,
@@ -15,6 +15,8 @@ import {
   getSpawnPosition,
   recordHistory,
   resetShotState,
+  regenerate,
+  isInvulnerable,
 } from "../services/game.service.js";
 import {
   recordMatchResult,
@@ -30,7 +32,7 @@ interface PlayerEntry {
     activeShip: string;
     activeBullet: string;
     activeBulletSecondary: string;
-    stats: LoadoutStats;
+    stats: PlayerStats;
   };
 }
 
@@ -50,7 +52,7 @@ const MAX_QUEUE_LENGTH = 30;
 const MAX_BACKLOG = 6;
 const MAX_CATCHUP_TICKS = 5;
 
-const ALLOWED_KEYS = new Set(["z", "q", "s", "d", "w", "a"]);
+const ALLOWED_KEYS = new Set(["z", "q", "s", "d", "w", "a", "shift"]);
 
 const inputQueues = new Map<string, ClientInput[]>();
 const lastSeenSeq = new Map<string, number>();
@@ -113,10 +115,14 @@ function buildStartPayload(room: RoomState) {
         primaryCooldown,
         specialCooldown,
         specialEnergyCost,
+        primaryBulletSpeed,
+        perks,
       }) => ({
         primaryCooldown,
+        primaryBulletSpeed,
         specialCooldown,
         specialEnergyCost,
+        dash: perks.dash,
         id,
         username,
         x,
@@ -264,10 +270,7 @@ function makeTick(io: Server, roomId: string, room: RoomState) {
       }
       inputCredits.set(player.id, credit);
 
-      player.energy = Math.min(
-        player.maxEnergy,
-        player.energy + GAME_CONFIG.ENERGY_REGEN,
-      );
+      regenerate(player, now);
     }
 
     resolveShipCollisions(players);
@@ -278,7 +281,7 @@ function makeTick(io: Server, roomId: string, room: RoomState) {
 
     // Sent every tick, even when empty: clients use it as their time reference
     io.to(roomId).emit("game:state", {
-      players: buildPlayerDeltas(room, players),
+      players: buildPlayerDeltas(room, players, now),
       bulletsAdded: added,
       bulletsRemoved: removed,
       t: now,
@@ -329,6 +332,7 @@ interface PlayerDelta {
   angle?: number;
   hp?: number;
   energy?: number;
+  inv?: boolean;
   lastProcessedSeq?: number;
   inputClock?: number;
 }
@@ -336,6 +340,7 @@ interface PlayerDelta {
 function buildPlayerDeltas(
   room: RoomState,
   players: PlayerState[],
+  now: number,
 ): PlayerDelta[] {
   if (!room.lastSent) room.lastSent = new Map();
   const deltas: PlayerDelta[] = [];
@@ -363,6 +368,11 @@ function buildPlayerDeltas(
       delta.energy = p.energy;
       changed = true;
     }
+    const inv = isInvulnerable(p, now);
+    if (!prev || prev.inv !== inv) {
+      delta.inv = inv;
+      changed = true;
+    }
     const seq = lastProcessedSeq.get(p.id) ?? 0;
     if (!prev || prev.seq !== seq) changed = true;
     if (changed) {
@@ -375,6 +385,7 @@ function buildPlayerDeltas(
         angle: p.angle,
         hp: p.hp,
         energy: p.energy,
+        inv,
         seq,
       });
     }
@@ -451,7 +462,6 @@ async function endMatch(
       const results = await recordMatchResult({
         winner: { socketId: winner.id, userId: winner.userId },
         loser: loser ? { socketId: loser.id, userId: loser.userId } : undefined,
-        awardXP: true,
       });
 
       await saveGameRecord({
@@ -474,10 +484,8 @@ async function endMatch(
         const data = results.get(p.id);
         playerSocket?.emit("game:matchEnd", {
           ...matchEndBase,
-          pointsEarned:
-            p.id === winnerSocketId
-              ? GAME_CONFIG.POINTS_PER_WIN
-              : GAME_CONFIG.CREDITS_PER_LOSS,
+          pointsEarned: data?.pointsGained ?? 0,
+          rewardNote: data?.rewardNote ?? null,
           newPoints: data?.points ?? null,
           xpGained: data?.xpGained ?? null,
           newXP: data?.xp ?? null,

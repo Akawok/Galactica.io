@@ -1,5 +1,6 @@
 import { get } from 'svelte/store';
 import { auth } from './stores/auth';
+import type { Attributes } from './shared/attributes';
 
 const BASE_URL = import.meta.env.VITE_SERVER_URL ?? 'http://localhost:3000';
 
@@ -104,6 +105,18 @@ export const api = {
 					method: 'POST',
 					body: JSON.stringify({ type, sprite, role })
 				}
+			)
+	},
+	attributes: {
+		save: (attributes: Attributes) =>
+			request<{ attributes: Attributes }>('/attributes', {
+				method: 'POST',
+				body: JSON.stringify({ attributes })
+			}),
+		reset: () =>
+			request<{ attributes: Attributes; galactics: number; respecCost: number }>(
+				'/attributes/reset',
+				{ method: 'POST', body: JSON.stringify({}) }
 			)
 	},
 	stats: {

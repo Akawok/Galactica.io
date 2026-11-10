@@ -6,12 +6,20 @@
 	import { chatMessages, addMessage } from '$lib/stores/chat';
 	import { api } from '$lib/api';
 	import { xpForLevel, xpPercent } from '$lib/xp';
-	import { filterByTab } from '$lib/itemFilter';
+	import { MAX_LEVEL } from '$lib/shared/xp';
 	import { GAME_EVENT, LOBBY_EVENT } from '$lib/shared/events';
 	import LoadoutRow from '$lib/components/LoadoutRow.svelte';
 	import ItemPopover from '$lib/components/ItemPopover.svelte';
-	import Backpack from '@lucide/svelte/icons/backpack';
-	import ShoppingCart from '@lucide/svelte/icons/shopping-cart';
+	import AttributesPanel from '$lib/components/AttributesPanel.svelte';
+	import { BRANCHES } from '$lib/attributesUi';
+	import {
+		ATTRIBUTE_MAX,
+		sanitizeAttributes,
+		spentPoints,
+		totalPoints,
+		type Attributes
+	} from '$lib/shared/attributes';
+	import Sparkles from '@lucide/svelte/icons/sparkles';
 	import Rocket from '@lucide/svelte/icons/rocket';
 	import Lock from '@lucide/svelte/icons/lock';
 	import Swords from '@lucide/svelte/icons/swords';
@@ -24,7 +32,7 @@
 	import Zap from '@lucide/svelte/icons/zap';
 	import Bomb from '@lucide/svelte/icons/bomb';
 	import Shield from '@lucide/svelte/icons/shield';
-	import Gem from '@lucide/svelte/icons/gem';
+	import Warehouse from '@lucide/svelte/icons/warehouse';
 	import DoorOpen from '@lucide/svelte/icons/door-open';
 	import X from '@lucide/svelte/icons/x';
 	import { getGrade } from '$lib/grades';
@@ -50,7 +58,6 @@
 		price?: number;
 		priceGalactics?: number;
 		description?: string;
-		stats?: Record<string, number>;
 	}
 
 	let players = $state<Player[]>([]);
@@ -67,9 +74,8 @@
 	} | null>(null);
 	let equipLoading = $state<string | null>(null);
 	let buyLoading = $state<string | null>(null);
-	let leftTab = $state<'armement' | 'shop'>('armement');
+	let leftTab = $state<'pilote' | 'hangar'>('pilote');
 	let rightTab = $state<'stats' | 'classement'>('stats');
-	let shopTab = $state<'ship' | 'primary' | 'secondary'>('ship');
 	let allItems = $state<InventoryItem[]>([]);
 	let ownedIds = $state<Set<string>>(new Set());
 
@@ -133,11 +139,29 @@
 	}
 	const kd = $derived(computeKD(fullStats));
 
-	const shopNotOwned = $derived(allItems.filter((i) => !ownedIds.has(String(i._id))));
-	const shopFiltered = $derived(filterByTab(shopNotOwned as any, shopTab) as InventoryItem[]);
+	// Free items are given to every player at sign-up, they never belong in the shop
+	const forSale = $derived(
+		allItems.filter(
+			(i) => !ownedIds.has(String(i._id)) && (i.price ?? 0) + (i.priceGalactics ?? 0) > 0
+		)
+	);
+	const shipsForSale = $derived(forSale.filter((i) => i.type === 'ship'));
+	const primaryForSale = $derived(
+		forSale.filter((i) => i.type === 'bullet' && i.bulletRole === 'primary')
+	);
+	const secondaryForSale = $derived(
+		forSale.filter((i) => i.type === 'bullet' && i.bulletRole === 'secondary')
+	);
 
-	async function buyItem(item: InventoryItem) {
-		if (buyLoading) return;
+	function canAfford(item: InventoryItem): boolean {
+		return (
+			($currentUser?.points ?? 0) >= (item.price ?? 0) &&
+			($currentUser?.galactics ?? 0) >= (item.priceGalactics ?? 0)
+		);
+	}
+
+	async function buyItem(item: InventoryItem): Promise<boolean> {
+		if (buyLoading) return false;
 		buyLoading = item._id;
 		loadoutError = null;
 		try {
@@ -145,8 +169,10 @@
 			auth.updateUser({ points, galactics });
 			ownedIds = new Set([...ownedIds, String(item._id)]);
 			inventory = [...inventory, item];
+			return true;
 		} catch (e) {
 			loadoutError = e instanceof Error ? e.message : 'Achat impossible';
+			return false;
 		} finally {
 			buyLoading = null;
 		}
@@ -181,7 +207,9 @@
 				xp: statsUser.xp ?? 0,
 				level: statsUser.level ?? 1,
 				points: statsUser.points ?? 0,
-				galactics: statsUser.galactics ?? 0
+				galactics: statsUser.galactics ?? 0,
+				attributes: statsUser.attributes,
+				respecCost: statsUser.respecCost ?? 0
 			});
 		}
 
@@ -322,31 +350,23 @@
 		);
 	}
 
-	function radarGrid(fraction: number): string {
-		return radarPath([fraction, fraction, fraction, fraction, fraction]);
-	}
-
-	const activeShip = $derived(
-		inventory.find((i) => i.type === 'ship' && i.sprite === $currentUser?.activeShip) ?? null
-	);
-	const activePrimary = $derived(
-		inventory.find(
-			(i) =>
-				i.type === 'bullet' && i.bulletRole === 'primary' && i.sprite === $currentUser?.activeBullet
-		) ?? null
+	const myAttributes = $derived(sanitizeAttributes($currentUser?.attributes));
+	const pointsAvailable = $derived(
+		totalPoints($currentUser?.level ?? 1) - spentPoints(myAttributes)
 	);
 
-	const radarAxes = ['Vitesse', 'DEF', 'Dégâts', 'DPS'];
-
-	function computeRadar(ship: typeof activeShip, primary: typeof activePrimary): number[] {
-		const speed = Math.min(1, (ship?.stats?.speed ?? 0) / 5);
-		const def = Math.min(1, (ship?.stats?.hp ?? 0) / 150);
-		const damage = Math.min(1, (primary?.stats?.damage ?? 0) / 60);
-		const cd = primary?.stats?.cooldown ?? 0;
-		const dps = cd > 0 ? Math.min(1, (((primary?.stats?.damage ?? 0) / cd) * 1000) / 50) : 0;
-		return [speed, def, damage, dps];
+	function onAttributesChange(update: {
+		attributes: Attributes;
+		galactics?: number;
+		respecCost?: number;
+	}) {
+		auth.updateUser(update);
 	}
-	const radarValues = $derived(computeRadar(activeShip, activePrimary));
+
+	const radarAxes = BRANCHES.flatMap((b) =>
+		b.attributes.map((a) => ({ key: a.key, label: a.label, color: b.accent }))
+	);
+	const radarValues = $derived(radarAxes.map((a) => myAttributes[a.key] / ATTRIBUTE_MAX));
 </script>
 
 <div class="hub-bg">
@@ -364,13 +384,18 @@
 			<div class="left-tabs">
 				<button
 					class="ltab"
-					class:active={leftTab === 'armement'}
-					onclick={() => (leftTab = 'armement')}
+					class:active={leftTab === 'pilote'}
+					onclick={() => (leftTab = 'pilote')}
 				>
-					<Backpack size={14} /> Armement
+					<Sparkles size={14} /> Pilote
+					{#if pointsAvailable > 0}<span class="ltab-badge">{pointsAvailable}</span>{/if}
 				</button>
-				<button class="ltab" class:active={leftTab === 'shop'} onclick={() => (leftTab = 'shop')}>
-					<ShoppingCart size={14} /> Shop
+				<button
+					class="ltab"
+					class:active={leftTab === 'hangar'}
+					onclick={() => (leftTab = 'hangar')}
+				>
+					<Warehouse size={14} /> Hangar
 				</button>
 			</div>
 
@@ -378,134 +403,76 @@
 				<p class="loadout-error" role="alert">{loadoutError}</p>
 			{/if}
 
-			{#if leftTab === 'armement'}
-				<LoadoutRow
-					label="Vaisseau"
-					icon={Rocket}
-					accent="#4dd9ff"
-					items={ships}
-					activeSprite={$currentUser?.activeShip}
-					loadingId={equipLoading}
-					emptyText="Aucun vaisseau"
-					onequip={equipItem}
-					onhover={showPopover}
-					onleave={hidePopover}
+			{#if leftTab === 'pilote'}
+				<AttributesPanel
+					saved={myAttributes}
+					level={$currentUser?.level ?? 1}
+					galactics={$currentUser?.galactics ?? 0}
+					respecCost={$currentUser?.respecCost ?? 0}
+					onchange={onAttributesChange}
 				/>
-				<LoadoutRow
-					label="Missile principal"
-					icon={Zap}
-					accent="#ff5566"
-					items={primaryBullets}
-					activeSprite={$currentUser?.activeBullet}
-					loadingId={equipLoading}
-					emptyText="Aucun missile"
-					onequip={equipItem}
-					onhover={showPopover}
-					onleave={hidePopover}
-				/>
-				<LoadoutRow
-					label="Missile secondaire"
-					icon={Bomb}
-					accent="#ffaa33"
-					items={secondaryBullets}
-					activeSprite={$currentUser?.activeBulletSecondary}
-					loadingId={equipLoading}
-					emptyText="Aucun missile"
-					onequip={equipItem}
-					onhover={showPopover}
-					onleave={hidePopover}
-				/>
-				<div class="shield-row">
-					<span class="shield-label">
-						<span class="shield-label-icon"><Shield size={12} /></span>
-						Bouclier
-					</span>
-					<div class="shield-scroll">
-						<div class="shield-card">
-							<span class="shield-lock"><Lock size={14} /></span>
-							<span class="shield-soon">Bientôt</span>
+			{:else}
+				<div class="hangar">
+					<LoadoutRow
+						label="Vaisseau"
+						icon={Rocket}
+						accent="#4dd9ff"
+						items={ships}
+						activeSprite={$currentUser?.activeShip}
+						loadingId={equipLoading}
+						emptyText="Aucun vaisseau"
+						shopItems={shipsForSale}
+						buyingId={buyLoading}
+						{canAfford}
+						onbuy={buyItem}
+						onequip={equipItem}
+						onhover={showPopover}
+						onleave={hidePopover}
+					/>
+					<LoadoutRow
+						label="Missile principal"
+						icon={Zap}
+						accent="#ff5566"
+						items={primaryBullets}
+						activeSprite={$currentUser?.activeBullet}
+						loadingId={equipLoading}
+						emptyText="Aucun missile"
+						shopItems={primaryForSale}
+						buyingId={buyLoading}
+						{canAfford}
+						onbuy={buyItem}
+						onequip={equipItem}
+						onhover={showPopover}
+						onleave={hidePopover}
+					/>
+					<LoadoutRow
+						label="Missile secondaire"
+						icon={Bomb}
+						accent="#ffaa33"
+						items={secondaryBullets}
+						activeSprite={$currentUser?.activeBulletSecondary}
+						loadingId={equipLoading}
+						emptyText="Aucun missile"
+						shopItems={secondaryForSale}
+						buyingId={buyLoading}
+						{canAfford}
+						onbuy={buyItem}
+						onequip={equipItem}
+						onhover={showPopover}
+						onleave={hidePopover}
+					/>
+					<div class="shield-row">
+						<span class="shield-label">
+							<span class="shield-label-icon"><Shield size={12} /></span>
+							Bouclier
+						</span>
+						<div class="shield-scroll">
+							<div class="shield-card">
+								<span class="shield-lock"><Lock size={14} /></span>
+								<span class="shield-soon">Bientôt</span>
+							</div>
 						</div>
 					</div>
-				</div>
-			{:else}
-				<div class="shop-tabs">
-					<button
-						class="shop-stab"
-						class:active={shopTab === 'ship'}
-						style="--accent: #4dd9ff"
-						onclick={() => (shopTab = 'ship')}
-					>
-						<Rocket size={13} /> Vaisseaux
-					</button>
-					<button
-						class="shop-stab"
-						class:active={shopTab === 'primary'}
-						style="--accent: #ff5566"
-						onclick={() => (shopTab = 'primary')}
-					>
-						<Zap size={13} /> Missile I
-					</button>
-					<button
-						class="shop-stab"
-						class:active={shopTab === 'secondary'}
-						style="--accent: #ffaa33"
-						onclick={() => (shopTab = 'secondary')}
-					>
-						<Bomb size={13} /> Missile II
-					</button>
-				</div>
-
-				<div class="shop-balance">
-					⭐ <span>{($currentUser?.points ?? 0).toLocaleString('fr-FR')} Crédits</span>
-					<span class="shop-galactics">
-						<Gem size={12} />
-						{($currentUser?.galactics ?? 0).toLocaleString('fr-FR')} Galactics
-					</span>
-				</div>
-
-				<div class="shop-list">
-					{#each shopFiltered as item (item._id)}
-						<div
-							class="shop-card"
-							onmouseenter={(e) => showPopover(e, item)}
-							onmouseleave={hidePopover}
-						>
-							<div class="shop-card-img">
-								<img
-									src={shipPreviewSrc(item.sprite)}
-									alt={item.name}
-									onerror={(e: any) => (e.target.style.display = 'none')}
-								/>
-							</div>
-							<div class="shop-card-info">
-								<span class="shop-card-name">{item.name}</span>
-								<span class="shop-card-price">
-									{#if item.price === 0 && !(item.priceGalactics ?? 0)}
-										Gratuit
-									{:else}
-										⭐ {item.price}
-										{#if item.priceGalactics}
-											<span class="price-galactics">
-												+ <Gem size={11} />
-												{item.priceGalactics}
-											</span>
-										{/if}
-									{/if}
-								</span>
-							</div>
-							<button
-								class="btn btn-primary btn-sm"
-								disabled={buyLoading === item._id ||
-									($currentUser?.points ?? 0) < (item.price ?? 0) ||
-									($currentUser?.galactics ?? 0) < (item.priceGalactics ?? 0)}
-								onclick={() => buyItem(item)}
-							>
-								{buyLoading === item._id ? '…' : item.price === 0 ? 'Obtenir' : 'Acheter'}
-							</button>
-						</div>
-					{:else}
-						<p class="empty-text">Tu as déjà tout.</p>
-					{/each}
 				</div>
 			{/if}
 		</section>
@@ -530,9 +497,13 @@
 			</div>
 			<div class="mega-pct">{xpPct}%</div>
 			<div class="mega-exp">
-				EXP: {($currentUser?.xp ?? 0).toLocaleString('fr-FR')} / {xpForLevel(
-					$currentUser?.level ?? 1
-				).toLocaleString('fr-FR')}
+				{#if ($currentUser?.level ?? 1) >= MAX_LEVEL}
+					Niveau max
+				{:else}
+					EXP: {($currentUser?.xp ?? 0).toLocaleString('fr-FR')} / {xpForLevel(
+						$currentUser?.level ?? 1
+					).toLocaleString('fr-FR')}
+				{/if}
 			</div>
 			<div class="mega-grade" style="--grade-color: {grade.color}">
 				Niv. {$currentUser?.level ?? 1} Grade: <strong>{grade.label}</strong>
@@ -642,10 +613,10 @@
 				Caractéristiques
 			</h2>
 			<div class="radar-wrap">
-				<svg viewBox="-18 -18 136 136" class="radar">
+				<svg viewBox="-28 -2 144 100" class="radar">
 					{#each [0.25, 0.5, 0.75, 1] as f}
 						<path
-							d={radarPath([f, f, f, f])}
+							d={radarPath(radarAxes.map(() => f))}
 							fill="none"
 							stroke="rgba(100,100,255,0.15)"
 							stroke-width="0.5"
@@ -668,14 +639,16 @@
 						stroke="#7b8cff"
 						stroke-width="0.8"
 					/>
-					{#each radarAxes as label, i}
+					{#each radarAxes as axis, i}
 						{@const angle = (i / radarAxes.length) * 2 * Math.PI - Math.PI / 2}
+						{@const cos = Math.cos(angle)}
 						<text
-							x={50 + 46 * Math.cos(angle)}
-							y={50 + 46 * Math.sin(angle)}
-							text-anchor="middle"
+							x={50 + 44 * cos}
+							y={50 + 44 * Math.sin(angle)}
+							text-anchor={cos > 0.2 ? 'start' : cos < -0.2 ? 'end' : 'middle'}
 							dominant-baseline="middle"
-							class="radar-label">{label}</text
+							fill={axis.color}
+							class="radar-label">{axis.label}</text
 						>
 					{/each}
 				</svg>
@@ -833,6 +806,7 @@
 		activeShip={$currentUser?.activeShip}
 		activeBullet={$currentUser?.activeBullet}
 		activeBulletSecondary={$currentUser?.activeBulletSecondary}
+		owned={ownedIds.has(String(hoveredItem._id))}
 	/>
 {/if}
 
@@ -920,6 +894,7 @@
 	.hub {
 		display: grid;
 		grid-template-columns: 300px 1fr 300px;
+		grid-template-rows: minmax(0, 1fr);
 		gap: 1rem;
 		padding: 1rem 1.5rem;
 		height: calc(100vh - 60px);
@@ -961,7 +936,6 @@
 	:global(.chat-col-title svg),
 	:global(.ltab svg),
 	:global(.lb-stab svg),
-	:global(.shop-stab svg),
 	:global(.waiting-row svg),
 	:global(.btn-hero svg),
 	:global(.btn-ghost svg) {
@@ -989,8 +963,11 @@
 		flex-direction: column;
 		gap: 0.875rem;
 		overflow: visible;
+		max-height: 100%;
+		min-height: 0;
 	}
 	.logo-card {
+		flex-shrink: 0;
 		background: rgba(10, 14, 36, 0.78);
 		border-radius: 14px;
 		display: flex;
@@ -1011,6 +988,15 @@
 		flex-direction: column;
 		gap: 0.85rem;
 		overflow: visible;
+		min-height: 0;
+	}
+	.hangar {
+		flex: 1 1 auto;
+		min-height: 0;
+		overflow-y: auto;
+		display: flex;
+		flex-direction: column;
+		gap: 0.85rem;
 	}
 
 	.shield-row {
@@ -1097,131 +1083,23 @@
 		color: #4dd9ff;
 		border-bottom-color: #4dd9ff;
 	}
-
-	.shop-tabs {
-		display: flex;
-		gap: 0.4rem;
-		margin-bottom: 0.6rem;
-	}
-	.shop-stab {
-		flex: 1;
-		display: flex;
+	.ltab-badge {
+		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		gap: 0.35rem;
-		background: rgba(255, 255, 255, 0.03);
-		border: 1px solid rgba(77, 217, 255, 0.12);
+		min-width: 16px;
+		height: 16px;
+		padding: 0 4px;
+		margin-left: 0.25rem;
 		border-radius: 8px;
-		color: #6870a0;
-		font-size: 0.72rem;
-		font-weight: 600;
-		padding: 0.4rem 0;
-		cursor: pointer;
-		transition: all 0.15s;
-	}
-	.shop-stab:hover {
-		color: #a0b0d0;
-		border-color: rgba(77, 217, 255, 0.3);
-	}
-
-	.shop-stab.active {
-		color: var(--accent, #4dd9ff);
-		border-color: var(--accent, #4dd9ff);
-		background: rgba(255, 255, 255, 0.05);
-		box-shadow: 0 0 10px color-mix(in srgb, var(--accent, #4dd9ff) 25%, transparent);
-	}
-
-	.shop-balance {
-		display: flex;
-		align-items: center;
-		gap: 0.8rem;
-		font-size: 0.78rem;
-		color: #6870a0;
-		margin-bottom: 0.6rem;
-	}
-	.shop-balance span {
-		color: #ffd700;
+		background: #4dd9ff;
+		color: #050818;
+		font-size: 0.65rem;
 		font-weight: 700;
-	}
-	.shop-balance .shop-galactics {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.3rem;
-		color: #c4b5fd;
-	}
-	:global(.shop-galactics svg) {
-		display: inline-block;
-		flex-shrink: 0;
+		vertical-align: middle;
+		box-shadow: 0 0 8px rgba(77, 217, 255, 0.6);
 	}
 
-	.shop-list {
-		display: flex;
-		flex-direction: column;
-		gap: 0.5rem;
-		overflow-y: auto;
-		max-height: calc(100vh - 280px);
-		scrollbar-width: thin;
-		scrollbar-color: rgba(77, 217, 255, 0.15) transparent;
-	}
-
-	.shop-card {
-		display: flex;
-		align-items: center;
-		gap: 0.6rem;
-		background: rgba(5, 8, 22, 0.7);
-		border: 1px solid rgba(77, 217, 255, 0.12);
-		border-radius: 10px;
-		padding: 0.5rem 0.6rem;
-		transition: border-color 0.15s;
-	}
-	.shop-card:hover {
-		border-color: rgba(77, 217, 255, 0.35);
-	}
-	.shop-card-img {
-		width: 40px;
-		height: 40px;
-		flex-shrink: 0;
-		background: rgba(5, 5, 25, 0.8);
-		border-radius: 8px;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-	}
-	.shop-card-img img {
-		max-width: 30px;
-		max-height: 30px;
-		object-fit: contain;
-		image-rendering: pixelated;
-	}
-	.shop-card-info {
-		flex: 1;
-		display: flex;
-		flex-direction: column;
-		gap: 0.15rem;
-		min-width: 0;
-	}
-	.shop-card-name {
-		font-size: 0.8rem;
-		color: #c0c8ff;
-		font-weight: 600;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.shop-card-price {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.25rem;
-		font-size: 0.72rem;
-		color: #ffd700;
-		font-weight: 600;
-	}
-	.shop-card-price .price-galactics {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.2rem;
-		color: #c4b5fd;
-	}
 	:global(.price-galactics svg) {
 		display: inline-block;
 		flex-shrink: 0;
@@ -1797,7 +1675,6 @@
 	}
 	.radar-label {
 		font-size: 5px;
-		fill: #c0d8ff;
 		font-weight: 600;
 	}
 

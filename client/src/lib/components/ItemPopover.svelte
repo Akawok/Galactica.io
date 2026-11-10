@@ -5,7 +5,6 @@
 		type: string;
 		bulletRole?: string | null;
 		description?: string;
-		stats?: Record<string, number>;
 	}
 	interface Props {
 		item: Item;
@@ -14,23 +13,28 @@
 		activeShip: string | undefined;
 		activeBullet: string | undefined;
 		activeBulletSecondary: string | undefined;
+		owned?: boolean;
 	}
-	let { item, x, y, activeShip, activeBullet, activeBulletSecondary }: Props = $props();
+	let {
+		item,
+		x,
+		y,
+		activeShip,
+		activeBullet,
+		activeBulletSecondary,
+		owned = true
+	}: Props = $props();
 
-	const STAT_LABELS: Record<string, string> = {
-		damage: 'Dégâts',
-		cooldown: 'Cooldown',
-		speed: 'Vitesse',
-		hp: 'HP',
-		energy: 'Énergie'
-	};
-	const statLabel = (key: string) => STAT_LABELS[key] ?? key;
-
-	const ANIMATED_SPRITES = ['spaceship-01', 'spaceship-02', 'spaceship-03', 'spaceship-04', 'spaceship-05', 'spaceship-06'];
+	const ANIMATED_SPRITES = [
+		'spaceship-01',
+		'spaceship-02',
+		'spaceship-03',
+		'spaceship-04',
+		'spaceship-05',
+		'spaceship-06'
+	];
 	function spriteSrc(sprite: string) {
-		return ANIMATED_SPRITES.includes(sprite)
-			? `/assets/${sprite}-f1.png`
-			: `/assets/${sprite}.png`;
+		return ANIMATED_SPRITES.includes(sprite) ? `/assets/${sprite}-f1.png` : `/assets/${sprite}.png`;
 	}
 
 	const active = $derived(
@@ -54,14 +58,9 @@
 	<div class="popover-body">
 		<h4>{item.name}</h4>
 		{#if item.description}<p class="popover-desc">{item.description}</p>{/if}
-		{#if item.stats && Object.keys(item.stats).length > 0}
-			<div class="popover-stats">
-				{#each Object.entries(item.stats) as [key, val]}
-					<span class="popover-stat">{statLabel(key)}: <strong>{val}</strong></span>
-				{/each}
-			</div>
-		{/if}
-		{#if !active}
+		{#if !owned}
+			<span class="popover-hint">Clic pour acheter</span>
+		{:else if !active}
 			<span class="popover-hint">Clic pour équiper</span>
 		{/if}
 	</div>
@@ -125,21 +124,6 @@
 		color: #6870a0;
 		line-height: 1.4;
 		margin: 0;
-	}
-	.popover-stats {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.25rem;
-	}
-	.popover-stat {
-		font-size: 0.68rem;
-		background: rgba(100, 100, 255, 0.1);
-		border-radius: 4px;
-		padding: 0.1rem 0.35rem;
-		color: #8090c0;
-	}
-	.popover-stat strong {
-		color: #a0a8ff;
 	}
 	.popover-hint {
 		font-size: 0.7rem;

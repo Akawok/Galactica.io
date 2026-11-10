@@ -96,7 +96,11 @@ export async function registerUser(
   }
 
   const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
-  const freeItems = await Item.find({ price: 0, priceGalactics: 0 })
+  // Older items have no priceGalactics field at all, which must count as free too
+  const freeItems = await Item.find({
+    price: 0,
+    priceGalactics: { $in: [0, null] },
+  })
     .select("_id")
     .lean();
 

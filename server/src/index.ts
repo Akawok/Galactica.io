@@ -10,6 +10,7 @@ import { config, isProduction, connectDB } from "./config.js";
 import { authRoutes } from "./routes/auth.js";
 import { shopRoutes } from "./routes/shop.js";
 import { statsRoutes } from "./routes/stats.js";
+import { attributesRoutes } from "./routes/attributes.js";
 import { leaderboardRoutes } from "./routes/leaderboard.js";
 import { chatRoutes } from "./routes/chat.js";
 import { adminRoutes } from "./routes/admin.js";
@@ -158,6 +159,7 @@ app.setNotFoundHandler((_req, reply) =>
 await app.register(authRoutes);
 await app.register(shopRoutes);
 await app.register(statsRoutes);
+await app.register(attributesRoutes);
 await app.register(leaderboardRoutes);
 await app.register(chatRoutes);
 await app.register(adminRoutes);

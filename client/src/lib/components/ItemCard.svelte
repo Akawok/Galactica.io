@@ -5,12 +5,11 @@
 	interface Props {
 		item: Item;
 		highlight?: boolean;
-		statLabel?: (key: string) => string;
 		footer: Snippet<[Item]>;
 		topRight?: Snippet<[Item]>;
 	}
 
-	let { item, highlight = false, statLabel = (k) => k, footer, topRight }: Props = $props();
+	let { item, highlight = false, footer, topRight }: Props = $props();
 </script>
 
 <div class="card" class:equipped={highlight}>
@@ -25,13 +24,6 @@
 	<div class="card-body">
 		<h3>{item.name}</h3>
 		<p class="desc">{item.description}</p>
-		{#if Object.keys(item.stats ?? {}).length > 0}
-			<div class="stats">
-				{#each Object.entries(item.stats) as [key, val]}
-					<span class="stat">{statLabel(key)}: <strong>{val}</strong></span>
-				{/each}
-			</div>
-		{/if}
 		<div class="card-footer">{@render footer(item)}</div>
 	</div>
 </div>
@@ -89,24 +81,6 @@
 		font-size: 0.78rem;
 		color: #6870a0;
 		line-height: 1.4;
-	}
-
-	.stats {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.3rem;
-	}
-
-	.stat {
-		font-size: 0.72rem;
-		background: rgba(100, 100, 255, 0.1);
-		border-radius: 4px;
-		padding: 0.1rem 0.4rem;
-		color: #8090c0;
-	}
-
-	.stat strong {
-		color: #a0a8ff;
 	}
 
 	.card-footer {

@@ -1,22 +1,18 @@
-import { Item } from "../models/Item.js";
+import { User } from "../models/User.js";
+import {
+  type PlayerStats,
+  PERK_CONFIG,
+  computeStats,
+  effectiveAttributes,
+} from "../shared/attributes.js";
 
 export { xpForLevel, applyXP } from "../shared/xp.js";
 
 export const GAME_CONFIG = {
   MAP_WIDTH: 1280,
   MAP_HEIGHT: 720,
-  SHIP_SPEED: 3,
   SHIP_RADIUS: 24,
-  MAX_HP: 100,
-  MAX_ENERGY: 100,
-  ENERGY_REGEN: 5 / 60,
-  BULLET_NORMAL_SPEED: 7,
-  BULLET_NORMAL_DAMAGE: 10,
-  BULLET_NORMAL_COOLDOWN: 200,
   BULLET_SPECIAL_SPEED: 5,
-  BULLET_SPECIAL_DAMAGE: 40,
-  BULLET_SPECIAL_COOLDOWN: 2000,
-  BULLET_SPECIAL_ENERGY: 20,
   BULLET_RADIUS: 6,
   ROUNDS_TO_WIN: 3,
   POINTS_PER_WIN: 100,
@@ -26,104 +22,41 @@ export const GAME_CONFIG = {
   DESERTION_PENALTY_CAP: 0.5,
   XP_PER_WIN: 120,
   XP_PER_LOSS: 40,
+  // Anti-farming: rewarded matches between the same two players per rolling 24h
+  REWARDED_MATCHES_PER_OPPONENT: 3,
+  // Winner rewards fade out when the loser is this many levels below (WoW-style grey targets)
+  GREY_GAP_START: 5,
+  GREY_GAP_ZERO: 10,
+  // Beating a higher level opponent grants extra XP, per level of difference, capped
+  UPSET_XP_BONUS_PER_LEVEL: 0.02,
+  UPSET_XP_BONUS_MAX: 0.1,
   TICK_RATE: 1000 / 60,
   // Max time a shooter's view may be rewound for hit detection (lag compensation)
   MAX_REWIND_MS: 200,
   HISTORY_MS: 1000,
 };
 
+// Exact (fractional) number of ticks between two primary shots
+export function shotInterval(cooldownMs: number): number {
+  return (cooldownMs * 60) / 1000;
+}
+
+// The fractional remainder is carried over while firing continuously, so every Cadence point
+// changes the real fire rate instead of being lost to tick rounding
+export function nextShotClock(last: number, clock: number, interval: number): number {
+  return clock - last < 2 * interval ? last + interval : clock;
+}
+
 export function cooldownTicks(cooldownMs: number): number {
   return Math.max(1, Math.round(cooldownMs / GAME_CONFIG.TICK_RATE));
 }
 
-export interface LoadoutStats {
-  maxHp: number;
-  maxEnergy: number;
-  speed: number;
-  primaryDamage: number;
-  primaryCooldown: number;
-  specialDamage: number;
-  specialCooldown: number;
-  specialEnergyCost: number;
+export async function loadPlayerStats(userId: string): Promise<PlayerStats> {
+  const user = await User.findById(userId).select("attributes level").lean();
+  return computeStats(effectiveAttributes(user?.attributes, user?.level ?? 1));
 }
 
-function clampStat(
-  value: unknown,
-  min: number,
-  max: number,
-  fallback: number,
-): number {
-  return typeof value === "number" && Number.isFinite(value)
-    ? Math.min(max, Math.max(min, value))
-    : fallback;
-}
-
-export async function loadLoadoutStats(
-  ship: string,
-  bulletPrimary: string,
-  bulletSecondary: string,
-): Promise<LoadoutStats> {
-  const [shipItem, primaryItem, specialItem] = await Promise.all([
-    Item.findOne({ sprite: ship, type: "ship" }).select("stats").lean(),
-    Item.findOne({
-      sprite: bulletPrimary,
-      type: "bullet",
-      bulletRole: "primary",
-    })
-      .select("stats")
-      .lean(),
-    Item.findOne({
-      sprite: bulletSecondary,
-      type: "bullet",
-      bulletRole: "secondary",
-    })
-      .select("stats")
-      .lean(),
-  ]);
-
-  return {
-    maxHp: clampStat(shipItem?.stats?.hp, 50, 300, GAME_CONFIG.MAX_HP),
-    maxEnergy: clampStat(
-      shipItem?.stats?.energy,
-      50,
-      300,
-      GAME_CONFIG.MAX_ENERGY,
-    ),
-    speed: clampStat(shipItem?.stats?.speed, 1, 6, GAME_CONFIG.SHIP_SPEED),
-    primaryDamage: clampStat(
-      primaryItem?.stats?.damage,
-      1,
-      100,
-      GAME_CONFIG.BULLET_NORMAL_DAMAGE,
-    ),
-    primaryCooldown: clampStat(
-      primaryItem?.stats?.cooldown,
-      80,
-      5000,
-      GAME_CONFIG.BULLET_NORMAL_COOLDOWN,
-    ),
-    specialDamage: clampStat(
-      specialItem?.stats?.damage,
-      1,
-      150,
-      GAME_CONFIG.BULLET_SPECIAL_DAMAGE,
-    ),
-    specialCooldown: clampStat(
-      specialItem?.stats?.cooldown,
-      500,
-      10_000,
-      GAME_CONFIG.BULLET_SPECIAL_COOLDOWN,
-    ),
-    specialEnergyCost: clampStat(
-      specialItem?.stats?.energy,
-      0,
-      100,
-      GAME_CONFIG.BULLET_SPECIAL_ENERGY,
-    ),
-  };
-}
-
-export interface PlayerState extends LoadoutStats {
+export interface PlayerState extends PlayerStats {
   id: string;
   userId: string;
   username: string;
@@ -139,7 +72,12 @@ export interface PlayerState extends LoadoutStats {
   inputClock: number;
   lastNormalShotClock: number;
   lastSpecialShotClock: number;
+  lastDashClock: number;
   prevRightClick: boolean;
+  prevDashKey: boolean;
+  lastDamagedAt: number;
+  invulnerableUntil: number;
+  lastStandUsed: boolean;
   viewLag: number;
   history: { t: number; x: number; y: number }[];
 }
@@ -182,6 +120,7 @@ export interface RoomState {
       angle: number;
       hp: number;
       energy: number;
+      inv: boolean;
       seq: number;
     }
   >;
@@ -201,7 +140,7 @@ export function createPlayerState(
   sprite: string,
   bulletSprite: string,
   bulletSpriteSecondary: string,
-  stats: LoadoutStats,
+  stats: PlayerStats,
 ): PlayerState {
   const { x, y } = getSpawnPosition(playerIndex);
   return {
@@ -219,7 +158,12 @@ export function createPlayerState(
     inputClock: 0,
     lastNormalShotClock: -Infinity,
     lastSpecialShotClock: -Infinity,
+    lastDashClock: -Infinity,
     prevRightClick: false,
+    prevDashKey: false,
+    lastDamagedAt: -Infinity,
+    invulnerableUntil: -Infinity,
+    lastStandUsed: false,
     viewLag: 0,
     history: [],
     ...stats,
@@ -230,9 +174,18 @@ export function resetShotState(player: PlayerState): void {
   player.inputClock = 0;
   player.lastNormalShotClock = -Infinity;
   player.lastSpecialShotClock = -Infinity;
+  player.lastDashClock = -Infinity;
   player.prevRightClick = false;
+  player.prevDashKey = false;
+  player.lastDamagedAt = -Infinity;
+  player.invulnerableUntil = -Infinity;
+  player.lastStandUsed = false;
   player.viewLag = 0;
   player.history = [];
+}
+
+export function isInvulnerable(player: PlayerState, now: number): boolean {
+  return now < player.invulnerableUntil;
 }
 
 export function applyInput(
@@ -259,22 +212,34 @@ export function applyInput(
   if (input.keys.includes("q") || input.keys.includes("a")) dx -= 1;
   if (input.keys.includes("d")) dx += 1;
 
-  if (dx !== 0 || dy !== 0) {
-    const len = Math.sqrt(dx * dx + dy * dy);
-    player.x = Math.max(
-      GAME_CONFIG.SHIP_RADIUS,
-      Math.min(
-        GAME_CONFIG.MAP_WIDTH - GAME_CONFIG.SHIP_RADIUS,
-        player.x + (dx / len) * player.speed,
-      ),
-    );
-    player.y = Math.max(
-      GAME_CONFIG.SHIP_RADIUS,
-      Math.min(
-        GAME_CONFIG.MAP_HEIGHT - GAME_CONFIG.SHIP_RADIUS,
-        player.y + (dy / len) * player.speed,
-      ),
-    );
+  const len = Math.sqrt(dx * dx + dy * dy);
+  if (len > 0) {
+    player.x = clampToMapX(player.x + (dx / len) * player.speed);
+    player.y = clampToMapY(player.y + (dy / len) * player.speed);
+  }
+
+  const dashPressed = input.keys.includes("shift") && !player.prevDashKey;
+  player.prevDashKey = input.keys.includes("shift");
+  if (
+    dashPressed &&
+    player.perks.dash &&
+    clock - player.lastDashClock >=
+      cooldownTicks(PERK_CONFIG.DASH_COOLDOWN_MS) &&
+    player.energy >= PERK_CONFIG.DASH_ENERGY
+  ) {
+    // Dash along the movement direction, or forward when standing still
+    const dirX = len > 0 ? dx / len : Math.cos(player.angle);
+    const dirY = len > 0 ? dy / len : Math.sin(player.angle);
+    player.lastDashClock = clock;
+    player.energy -= PERK_CONFIG.DASH_ENERGY;
+    player.x = clampToMapX(player.x + dirX * PERK_CONFIG.DASH_DISTANCE);
+    player.y = clampToMapY(player.y + dirY * PERK_CONFIG.DASH_DISTANCE);
+    if (player.perks.dashInvuln) {
+      player.invulnerableUntil = Math.max(
+        player.invulnerableUntil,
+        now + PERK_CONFIG.DASH_INVULN_MS,
+      );
+    }
   }
 
   const muzzleOffset = GAME_CONFIG.SHIP_RADIUS + GAME_CONFIG.BULLET_RADIUS + 1;
@@ -283,16 +248,20 @@ export function applyInput(
 
   if (
     input.leftClick &&
-    clock - player.lastNormalShotClock >= cooldownTicks(player.primaryCooldown)
+    clock - player.lastNormalShotClock >= shotInterval(player.primaryCooldown)
   ) {
-    player.lastNormalShotClock = clock;
+    player.lastNormalShotClock = nextShotClock(
+      player.lastNormalShotClock,
+      clock,
+      shotInterval(player.primaryCooldown),
+    );
     bullets.push({
       id: `${player.id}:${input.seq}:n`,
       ownerId: player.id,
       x: player.x + cos * muzzleOffset,
       y: player.y + sin * muzzleOffset,
-      vx: cos * GAME_CONFIG.BULLET_NORMAL_SPEED,
-      vy: sin * GAME_CONFIG.BULLET_NORMAL_SPEED,
+      vx: cos * player.primaryBulletSpeed,
+      vy: sin * player.primaryBulletSpeed,
       damage: player.primaryDamage,
       radius: GAME_CONFIG.BULLET_RADIUS,
       type: "normal",
@@ -440,6 +409,7 @@ export function resolveCollisions(
     let hit = false;
     for (const player of players) {
       if (player.id === bullet.ownerId) continue;
+      if (player.hp <= 0 || isInvulnerable(player, now)) continue;
       const pos =
         bullet.viewLag > 0
           ? positionAt(player, now - bullet.viewLag)
@@ -448,7 +418,8 @@ export function resolveCollisions(
       const dy = bullet.y - pos.y;
       const threshold = bullet.radius + GAME_CONFIG.SHIP_RADIUS;
       if (dx * dx + dy * dy < threshold * threshold) {
-        player.hp = Math.max(0, player.hp - bullet.damage);
+        const shooter = players.find((p) => p.id === bullet.ownerId);
+        applyHit(bullet, shooter, player, now);
         hit = true;
         break;
       }
@@ -458,4 +429,54 @@ export function resolveCollisions(
   }
   bullets.length = write;
   return removed;
+}
+
+function applyHit(
+  bullet: BulletState,
+  shooter: PlayerState | undefined,
+  target: PlayerState,
+  now: number,
+): void {
+  let damage = bullet.damage;
+  if (
+    shooter?.perks.execute &&
+    target.hp < target.maxHp * PERK_CONFIG.EXECUTE_HP_RATIO
+  ) {
+    damage *= 1 + PERK_CONFIG.EXECUTE_BONUS;
+  }
+  damage *= 1 - target.damageReduction;
+
+  target.lastDamagedAt = now;
+  if (target.hp - damage <= 0 && target.perks.lastStand && !target.lastStandUsed) {
+    target.lastStandUsed = true;
+    target.hp = 1;
+  } else {
+    target.hp = Math.max(0, target.hp - damage);
+  }
+
+  if (bullet.type === "normal" && shooter?.perks.energyOnHit) {
+    shooter.energy = Math.min(
+      shooter.maxEnergy,
+      shooter.energy + PERK_CONFIG.ENERGY_ON_HIT,
+    );
+  }
+}
+
+export function regenerate(player: PlayerState, now: number): void {
+  const tickSeconds = GAME_CONFIG.TICK_RATE / 1000;
+  player.energy = Math.min(
+    player.maxEnergy,
+    player.energy + player.energyRegen * tickSeconds,
+  );
+  if (
+    player.perks.regen &&
+    player.hp > 0 &&
+    player.hp < player.maxHp &&
+    now - player.lastDamagedAt >= PERK_CONFIG.REGEN_DELAY_MS
+  ) {
+    player.hp = Math.min(
+      player.maxHp,
+      player.hp + PERK_CONFIG.REGEN_PER_SECOND * tickSeconds,
+    );
+  }
 }

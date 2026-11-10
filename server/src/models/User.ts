@@ -1,4 +1,9 @@
 import mongoose, { Schema, Document } from "mongoose";
+import {
+  type Attributes,
+  sanitizeAttributes,
+  respecCost,
+} from "../shared/attributes.js";
 
 export type UserRole = "user" | "moderator" | "admin";
 
@@ -21,6 +26,8 @@ export interface IUser extends Document {
   activeShip: string;
   activeBullet: string;
   activeBulletSecondary: string;
+  attributes: Attributes;
+  respecCount: number;
   stats: {
     wins: number;
     losses: number;
@@ -66,6 +73,16 @@ const UserSchema = new Schema<IUser>({
   activeShip: { type: String, default: "spaceship-01" },
   activeBullet: { type: String, default: "bullet1" },
   activeBulletSecondary: { type: String, default: "bullet1" },
+  attributes: {
+    blindage: { type: Number, default: 0 },
+    deflecteur: { type: Number, default: 0 },
+    canons: { type: Number, default: 0 },
+    cadence: { type: Number, default: 0 },
+    ogive: { type: Number, default: 0 },
+    propulseurs: { type: Number, default: 0 },
+    reacteur: { type: Number, default: 0 },
+  },
+  respecCount: { type: Number, default: 0 },
   stats: {
     wins: { type: Number, default: 0 },
     losses: { type: Number, default: 0 },
@@ -91,6 +108,8 @@ export function serializeUser(user: IUser) {
     activeShip: user.activeShip,
     activeBullet: user.activeBullet,
     activeBulletSecondary: user.activeBulletSecondary ?? "bullet1",
+    attributes: sanitizeAttributes(user.attributes),
+    respecCost: respecCost(user.respecCount ?? 0),
   };
 }
 

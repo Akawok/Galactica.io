@@ -15,9 +15,13 @@ import {
 	GAME_CONFIG,
 	applyMovement,
 	cooldownTicks,
+	dashDirection,
+	nextShotClock,
+	shotInterval,
 	type PredictedInput,
 	type PredictedPlayer
 } from './physics';
+import { PERK_CONFIG } from '$lib/shared/attributes';
 import type { Socket } from 'socket.io-client';
 
 // Remote entities are rendered this far in the past so there are always two snapshots to blend
@@ -50,6 +54,7 @@ interface PlayerState {
 	maxHp?: number;
 	maxEnergy?: number;
 	speed?: number;
+	inv?: boolean;
 }
 interface PlayerDelta {
 	id: string;
@@ -58,6 +63,7 @@ interface PlayerDelta {
 	angle?: number;
 	hp?: number;
 	energy?: number;
+	inv?: boolean;
 	lastProcessedSeq?: number;
 	inputClock?: number;
 }
@@ -81,6 +87,8 @@ interface StartPlayer extends PlayerState {
 	primaryCooldown?: number;
 	specialCooldown?: number;
 	specialEnergyCost?: number;
+	primaryBulletSpeed?: number;
+	dash?: boolean;
 }
 interface GameStartPayload {
 	players: StartPlayer[];
@@ -151,11 +159,17 @@ function lerpAngle(a: number, b: number, k: number): number {
 }
 
 function clampX(x: number): number {
-	return Math.max(GAME_CONFIG.SHIP_RADIUS, Math.min(GAME_CONFIG.MAP_WIDTH - GAME_CONFIG.SHIP_RADIUS, x));
+	return Math.max(
+		GAME_CONFIG.SHIP_RADIUS,
+		Math.min(GAME_CONFIG.MAP_WIDTH - GAME_CONFIG.SHIP_RADIUS, x)
+	);
 }
 
 function clampY(y: number): number {
-	return Math.max(GAME_CONFIG.SHIP_RADIUS, Math.min(GAME_CONFIG.MAP_HEIGHT - GAME_CONFIG.SHIP_RADIUS, y));
+	return Math.max(
+		GAME_CONFIG.SHIP_RADIUS,
+		Math.min(GAME_CONFIG.MAP_HEIGHT - GAME_CONFIG.SHIP_RADIUS, y)
+	);
 }
 
 export class GameEngine {
@@ -209,6 +223,8 @@ export class GameEngine {
 		primaryCooldown: 200,
 		specialCooldown: 2000,
 		specialEnergyCost: 20,
+		primaryBulletSpeed: 7,
+		dash: false,
 		bulletSprite: '',
 		bulletSpriteSecondary: ''
 	};
@@ -217,7 +233,10 @@ export class GameEngine {
 	private lastNormalShotClock = -Infinity;
 	private lastSpecialShotClock = -Infinity;
 	private prevRightClick = false;
-	private unackedSpecials: { seq: number; cost: number }[] = [];
+	private lastDashClock = -Infinity;
+	private prevDashKey = false;
+	// Energy spent by predicted actions the server has not acknowledged yet
+	private unackedSpends: { seq: number; cost: number }[] = [];
 
 	constructor(socket: Socket, myId: string, isSpectator: boolean) {
 		this.socket = socket;
@@ -356,7 +375,8 @@ export class GameEngine {
 		this.inputSeq++;
 		this.updateMouseAngle();
 		const keys = Array.from(this.keys);
-		const input: PredictedInput = { keys, mouseAngle: this.mouseAngle };
+		const dash = this.predictDash(keys, this.inputSeq);
+		const input: PredictedInput = { keys, mouseAngle: this.mouseAngle, dash };
 
 		this.socket.emit('game:input', {
 			seq: this.inputSeq,
@@ -370,6 +390,10 @@ export class GameEngine {
 		this.prevPredicted.x = this.predicted.x;
 		this.prevPredicted.y = this.predicted.y;
 		applyMovement(this.predicted, input, this.getBlockers());
+		if (dash) {
+			const dir = dashDirection(keys, this.predicted.angle);
+			this.spawnDashBurst(this.prevPredicted.x, this.prevPredicted.y, dir.x, dir.y);
+		}
 		this.pendingInputs.push({ seq: this.inputSeq, input });
 		if (this.pendingInputs.length > GameEngine.MAX_PENDING_INPUTS) {
 			this.pendingInputs.splice(0, this.pendingInputs.length - GameEngine.MAX_PENDING_INPUTS);
@@ -381,7 +405,20 @@ export class GameEngine {
 	private predictedEnergy(): number {
 		const me = this.playerVisuals.get(this.myId);
 		const base = me?.state.energy ?? 0;
-		return base - this.unackedSpecials.reduce((sum, s) => sum + s.cost, 0);
+		return base - this.unackedSpends.reduce((sum, s) => sum + s.cost, 0);
+	}
+
+	private predictDash(keys: string[], seq: number): boolean {
+		const pressed = keys.includes('shift');
+		const edge = pressed && !this.prevDashKey;
+		this.prevDashKey = pressed;
+		if (!edge || !this.myLoadout.dash) return false;
+		const clock = seq - this.roundBaseSeq;
+		if (clock - this.lastDashClock < cooldownTicks(PERK_CONFIG.DASH_COOLDOWN_MS)) return false;
+		if (this.predictedEnergy() < PERK_CONFIG.DASH_ENERGY) return false;
+		this.lastDashClock = clock;
+		this.unackedSpends.push({ seq, cost: PERK_CONFIG.DASH_ENERGY });
+		return true;
 	}
 
 	private predictShots(seq: number) {
@@ -391,15 +428,19 @@ export class GameEngine {
 
 		if (
 			this.leftClick &&
-			clock - this.lastNormalShotClock >= cooldownTicks(this.myLoadout.primaryCooldown)
+			clock - this.lastNormalShotClock >= shotInterval(this.myLoadout.primaryCooldown)
 		) {
-			this.lastNormalShotClock = clock;
+			this.lastNormalShotClock = nextShotClock(
+				this.lastNormalShotClock,
+				clock,
+				shotInterval(this.myLoadout.primaryCooldown)
+			);
 			const muzzle = GAME_CONFIG.SHIP_RADIUS + GAME_CONFIG.BULLET_RADIUS + 1;
 			this.spawnOwnBullet(`${this.myId}:${seq}:n`, seq, {
 				x: this.predicted.x + cos * muzzle,
 				y: this.predicted.y + sin * muzzle,
-				vx: cos * GAME_CONFIG.BULLET_NORMAL_SPEED,
-				vy: sin * GAME_CONFIG.BULLET_NORMAL_SPEED,
+				vx: cos * this.myLoadout.primaryBulletSpeed,
+				vy: sin * this.myLoadout.primaryBulletSpeed,
 				type: 'normal',
 				sprite: this.myLoadout.bulletSprite
 			});
@@ -413,7 +454,7 @@ export class GameEngine {
 			this.predictedEnergy() >= cost
 		) {
 			this.lastSpecialShotClock = clock;
-			this.unackedSpecials.push({ seq, cost });
+			this.unackedSpends.push({ seq, cost });
 			const muzzle = GAME_CONFIG.SHIP_RADIUS + GAME_CONFIG.BULLET_RADIUS * 2 + 1;
 			this.spawnOwnBullet(`${this.myId}:${seq}:s`, seq, {
 				x: this.predicted.x + cos * muzzle,
@@ -587,6 +628,8 @@ export class GameEngine {
 				primaryCooldown: p.primaryCooldown ?? this.myLoadout.primaryCooldown,
 				specialCooldown: p.specialCooldown ?? this.myLoadout.specialCooldown,
 				specialEnergyCost: p.specialEnergyCost ?? this.myLoadout.specialEnergyCost,
+				primaryBulletSpeed: p.primaryBulletSpeed ?? this.myLoadout.primaryBulletSpeed,
+				dash: p.dash ?? false,
 				bulletSprite: p.bulletSprite,
 				bulletSpriteSecondary: p.bulletSpriteSecondary
 			};
@@ -626,6 +669,7 @@ export class GameEngine {
 			if (p.angle !== undefined) visual.known.angle = p.angle;
 			if (p.hp !== undefined) visual.state.hp = p.hp;
 			if (p.energy !== undefined) visual.state.energy = p.energy;
+			if (p.inv !== undefined) visual.state.inv = p.inv;
 			if (p.hp !== undefined || p.energy !== undefined) this.updateBars(visual);
 			if (this.isLocal(p.id) && p.lastProcessedSeq !== undefined) {
 				ackedSeq = p.lastProcessedSeq;
@@ -721,7 +765,7 @@ export class GameEngine {
 			this.correction.y = 0;
 		}
 
-		this.unackedSpecials = this.unackedSpecials.filter((s) => s.seq > ackedSeq);
+		this.unackedSpends = this.unackedSpends.filter((s) => s.seq > ackedSeq);
 
 		// The server skips inputs it had to drop, so realign our shot clock on its count
 		if (serverClock !== null && serverClock > 0) this.roundBaseSeq = ackedSeq - serverClock;
@@ -753,11 +797,13 @@ export class GameEngine {
 		this.rightClick = false;
 		this.keys.clear();
 		this.pendingInputs = [];
-		this.unackedSpecials = [];
+		this.unackedSpends = [];
 		this.roundBaseSeq = this.inputSeq;
 		this.lastNormalShotClock = -Infinity;
 		this.lastSpecialShotClock = -Infinity;
+		this.lastDashClock = -Infinity;
 		this.prevRightClick = false;
+		this.prevDashKey = false;
 		this.correction.x = 0;
 		this.correction.y = 0;
 		this.stepAcc = 0;
@@ -769,6 +815,7 @@ export class GameEngine {
 				if (!visual) continue;
 				visual.state.hp = p.hp;
 				visual.state.energy = p.energy;
+				visual.state.inv = false;
 				visual.container.x = p.x;
 				visual.container.y = p.y;
 				visual.known = { x: p.x, y: p.y, angle: p.angle };
@@ -832,12 +879,17 @@ export class GameEngine {
 		this.correction.y *= decay;
 
 		for (const [id, v] of this.playerVisuals) {
+			v.container.alpha = v.state.inv ? 0.4 : 1;
 			if (this.isLocal(id)) {
 				const alpha = Math.min(1, this.stepAcc / GAME_CONFIG.TICK_MS);
 				v.container.x =
-					this.prevPredicted.x + (this.predicted.x - this.prevPredicted.x) * alpha + this.correction.x;
+					this.prevPredicted.x +
+					(this.predicted.x - this.prevPredicted.x) * alpha +
+					this.correction.x;
 				v.container.y =
-					this.prevPredicted.y + (this.predicted.y - this.prevPredicted.y) * alpha + this.correction.y;
+					this.prevPredicted.y +
+					(this.predicted.y - this.prevPredicted.y) * alpha +
+					this.correction.y;
 				v.displayAngle = this.predicted.angle;
 				v.sprite.rotation = this.predicted.angle + Math.PI / 2;
 				continue;
@@ -845,6 +897,15 @@ export class GameEngine {
 			const sample = this.sampleAt(v, renderTime);
 			const moved = Math.hypot(sample.x - v.container.x, sample.y - v.container.y);
 			v.isMoving = moved > 0.3 * dt;
+			// A jump far beyond normal speed is a dash
+			if (moved > PERK_CONFIG.DASH_DISTANCE / 3) {
+				this.spawnDashBurst(
+					v.container.x,
+					v.container.y,
+					(sample.x - v.container.x) / moved,
+					(sample.y - v.container.y) / moved
+				);
+			}
 			this.setShipMoving(v, v.isMoving);
 			v.container.x = sample.x;
 			v.container.y = sample.y;
@@ -876,7 +937,7 @@ export class GameEngine {
 			if (b.own && inside && !b.predictedHit) {
 				// The server tests our shots against targets as we see them, so a visual hit here is a hit there
 				for (const [pid, pv] of this.playerVisuals) {
-					if (pid === this.myId) continue;
+					if (pid === this.myId || pv.state.inv) continue;
 					const threshold = b.radius + GAME_CONFIG.SHIP_RADIUS;
 					const dx = x - pv.container.x;
 					const dy = y - pv.container.y;
@@ -909,6 +970,24 @@ export class GameEngine {
 				life: 0,
 				maxLife: 12 + Math.random() * 8,
 				size: 2.5 + Math.random() * 2.5
+			});
+		}
+	}
+
+	private spawnDashBurst(x: number, y: number, dirX: number, dirY: number) {
+		const backAngle = Math.atan2(-dirY, -dirX);
+		for (let i = 0; i < 16; i++) {
+			const spread = (Math.random() - 0.5) * 1.2;
+			const speed = 2 + Math.random() * 3;
+			const angle = backAngle + spread;
+			this.thrusterParticles.push({
+				x: x + (Math.random() - 0.5) * 16,
+				y: y + (Math.random() - 0.5) * 16,
+				vx: Math.cos(angle) * speed,
+				vy: Math.sin(angle) * speed,
+				life: 0,
+				maxLife: 14 + Math.random() * 10,
+				size: 3 + Math.random() * 3
 			});
 		}
 	}

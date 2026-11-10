@@ -1,7 +1,7 @@
 import { randomBytes } from "crypto";
 import type { Server, Socket } from "socket.io";
 import type { RoomState } from "../services/game.service.js";
-import { loadLoadoutStats } from "../services/game.service.js";
+import { loadPlayerStats } from "../services/game.service.js";
 import {
   registerGameSocket,
   cleanupRoomInputs,
@@ -349,16 +349,8 @@ export function registerLobbySocket(io: Server, socket: Socket) {
     let stats1, stats2;
     try {
       [stats1, stats2] = await Promise.all([
-        loadLoadoutStats(
-          player1.activeShip,
-          player1.activeBullet,
-          player1.activeBulletSecondary,
-        ),
-        loadLoadoutStats(
-          player.activeShip,
-          player.activeBullet,
-          player.activeBulletSecondary,
-        ),
+        loadPlayerStats(player1.userId),
+        loadPlayerStats(player.userId),
       ]);
     } catch (err) {
       console.error("[game:join] erreur chargement loadout:", err);

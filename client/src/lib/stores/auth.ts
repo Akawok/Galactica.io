@@ -1,5 +1,6 @@
 import { writable, derived } from 'svelte/store';
 import { browser } from '$app/environment';
+import type { Attributes } from '$lib/shared/attributes';
 
 export type UserRole = 'user' | 'moderator' | 'admin';
 
@@ -14,6 +15,8 @@ export interface AuthUser {
 	activeShip: string;
 	activeBullet: string;
 	activeBulletSecondary: string;
+	attributes?: Attributes;
+	respecCost?: number;
 }
 
 const USER_KEY = 'galactica_user';

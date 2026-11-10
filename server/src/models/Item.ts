@@ -11,13 +11,6 @@ export interface IItem extends Document {
   priceGalactics: number;
   description: string;
   sprite: string;
-  stats: {
-    damage?: number;
-    cooldown?: number;
-    speed?: number;
-    hp?: number;
-    energy?: number;
-  };
 }
 
 const ItemSchema = new Schema<IItem>({
@@ -28,13 +21,6 @@ const ItemSchema = new Schema<IItem>({
   priceGalactics: { type: Number, default: 0 },
   description: { type: String, default: "" },
   sprite: { type: String, required: true },
-  stats: {
-    damage: Number,
-    cooldown: Number,
-    speed: Number,
-    hp: Number,
-    energy: Number,
-  },
 });
 
 export const Item = mongoose.model<IItem>("Item", ItemSchema);

@@ -6,23 +6,16 @@
 	interface Props {
 		items: Item[];
 		isHighlighted?: (item: Item) => boolean;
-		statLabel?: (key: string) => string;
 		footer: Snippet<[Item]>;
 		topRight?: Snippet<[Item]>;
 	}
 
-	let { items, isHighlighted, statLabel, footer, topRight }: Props = $props();
+	let { items, isHighlighted, footer, topRight }: Props = $props();
 </script>
 
 <div class="grid">
 	{#each items as item (item._id)}
-		<ItemCard
-			{item}
-			highlight={isHighlighted ? isHighlighted(item) : false}
-			{statLabel}
-			{footer}
-			{topRight}
-		/>
+		<ItemCard {item} highlight={isHighlighted ? isHighlighted(item) : false} {footer} {topRight} />
 	{/each}
 </div>
 

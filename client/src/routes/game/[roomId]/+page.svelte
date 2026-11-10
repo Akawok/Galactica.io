@@ -21,6 +21,7 @@
 		newLevel: number | null;
 		leveledUp: boolean;
 		galacticsGained: number;
+		rewardNote: 'limit' | 'grey' | 'upset' | null;
 	} | null>(null);
 	let abandonResult = $state<{ deserter: string; creditsRecovered: number } | null>(null);
 	let isSpectator = $state(false);
@@ -100,6 +101,7 @@
 				leveledUp: boolean;
 				galacticsGained?: number;
 				newGalactics?: number | null;
+				rewardNote?: 'limit' | 'grey' | 'upset' | null;
 			}) => {
 				status = 'matchEnd';
 				matchResult = {
@@ -108,7 +110,8 @@
 					xpGained: data.xpGained,
 					newLevel: data.newLevel,
 					leveledUp: data.leveledUp,
-					galacticsGained: data.galacticsGained ?? 0
+					galacticsGained: data.galacticsGained ?? 0,
+					rewardNote: data.rewardNote ?? null
 				};
 				const updates: any = {};
 				if (data.newPoints !== null) updates.points = data.newPoints;
@@ -220,6 +223,14 @@
 					{#if matchResult.pointsEarned > 0}
 						<p><strong>+{matchResult.pointsEarned} Crédits</strong> de consolation</p>
 					{/if}
+				{/if}
+
+				{#if matchResult.rewardNote === 'limit'}
+					<p class="reward-note">Plus de gains contre ce joueur aujourd'hui.</p>
+				{:else if matchResult.rewardNote === 'grey'}
+					<p class="reward-note">Gains réduits : ton adversaire avait beaucoup moins de niveaux.</p>
+				{:else if matchResult.rewardNote === 'upset'}
+					<p class="reward-note bonus">Bonus d'XP : tu as battu un adversaire plus haut niveau !</p>
 				{/if}
 
 				{#if matchResult.xpGained !== null}
@@ -360,6 +371,15 @@
 		font-size: 1.1rem;
 		font-weight: 700;
 		color: #a8ff78;
+	}
+
+	.reward-note {
+		font-size: 0.8rem;
+		color: #ffaa33;
+	}
+
+	.reward-note.bonus {
+		color: #4dd9ff;
 	}
 
 	.levelup-badge {
