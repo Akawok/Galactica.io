@@ -22,7 +22,7 @@ import {
   recordMatchResult,
   saveGameRecord,
 } from "../services/match.service.js";
-import { announceLevelChange, rooms } from "./lobby.js";
+import { announceLevelChange, rooms, teardownRoom } from "./lobby.js";
 
 interface PlayerEntry {
   socket: Socket;
@@ -208,6 +208,7 @@ export function registerGameSocket(
   io.to(roomId).emit("game:navigate", { roomId });
 
   setTimeout(() => {
+    if (rooms.get(roomId) !== room) return;
     io.to(roomId).emit("game:start", buildStartPayload(room));
   }, 500);
 
@@ -429,7 +430,7 @@ async function endRound(
   } else {
     room.nextRoundTimeout = setTimeout(() => {
       room.nextRoundTimeout = undefined;
-      if (!rooms.has(roomId)) return;
+      if (rooms.get(roomId) !== room || room.status !== "roundEnd") return;
       room.status = "playing";
       room.roundStartTime = Date.now();
       resetRound(room);
@@ -515,9 +516,15 @@ async function endMatch(
         });
       }
     }
+  } catch (err) {
+    console.error("[endMatch] erreur:", err);
+    // Without this the players would stay frozen on the game screen
+    io.to(roomId).emit("game:closed", {
+      roomId,
+      reason: "Erreur serveur, le résultat n'a pas pu être enregistré",
+    });
   } finally {
-    for (const p of players) cleanupSocketInput(io, p.id);
-    rooms.delete(roomId);
+    teardownRoom(io, room);
   }
 }
 
@@ -530,6 +537,8 @@ function cleanupSocketInput(io: Server, socketId: string) {
 }
 
 export function cleanupRoomInputs(io: Server, room: RoomState) {
+  if (room.intervalId) clearInterval(room.intervalId);
+  room.intervalId = undefined;
   for (const socketId of room.players.keys()) cleanupSocketInput(io, socketId);
   if (room.nextRoundTimeout) {
     clearTimeout(room.nextRoundTimeout);

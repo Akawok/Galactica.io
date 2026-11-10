@@ -4,6 +4,7 @@ import { Item } from "../models/Item.js";
 import {
   ValidationError,
   canonicalUsername,
+  emailKey,
   normalizeEmail,
   normalizeUsername,
   validatePassword,
@@ -58,12 +59,8 @@ function registerFailure(key: string) {
   }
 }
 
-export function clearLoginFailures(key: string) {
-  failedLogins.delete(key.trim().toLowerCase());
-}
-
-function clearFailures(key: string) {
-  failedLogins.delete(key);
+export function clearLoginFailures(email: string) {
+  failedLogins.delete(emailKey(email));
 }
 
 export function pruneLoginAttempts() {
@@ -95,7 +92,7 @@ export async function registerUser(
     throw new ValidationError("Nom d'utilisateur déjà pris");
   }
 
-  const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+  const passwordHash = await hashPassword(password);
   // Older items have no priceGalactics field at all, which must count as free too
   const freeItems = await Item.find({
     price: 0,
@@ -122,8 +119,7 @@ export async function registerUser(
 }
 
 export async function loginUser(rawEmail: unknown, rawPassword: unknown) {
-  const email =
-    typeof rawEmail === "string" ? rawEmail.trim().toLowerCase() : "";
+  const email = emailKey(rawEmail);
   const password = typeof rawPassword === "string" ? rawPassword : "";
 
   assertNotLockedOut(email);
@@ -148,6 +144,6 @@ export async function loginUser(rawEmail: unknown, rawPassword: unknown) {
     );
   }
 
-  clearFailures(email);
+  clearLoginFailures(email);
   return user;
 }

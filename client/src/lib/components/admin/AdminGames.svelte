@@ -19,6 +19,9 @@
 	let rooms = $state<LiveRoom[]>([]);
 	let online = $state<OnlinePlayer[]>([]);
 	let liveError = $state<string | null>(null);
+	let liveLoaded = $state(false);
+	let liveLoading = false;
+	let historyLoaded = $state(false);
 	let closing = $state<string | null>(null);
 	let closeReason = $state('');
 	let closeBusy = $state(false);
@@ -45,12 +48,15 @@
 	});
 
 	$effect(() => {
-		const params = { username: search.trim() || undefined, page: pageNumber };
+		const params = { username: search.trim() || undefined, page: pageNumber, limit: PAGE_SIZE };
 		clearTimeout(debounce);
 		debounce = setTimeout(() => loadHistory(params), params.username ? 250 : 0);
 	});
 
 	async function loadLive() {
+		// A slow answer must not overwrite a newer one
+		if (liveLoading) return;
+		liveLoading = true;
 		try {
 			const res = await api.admin.liveGames();
 			rooms = res.rooms.sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0));
@@ -58,10 +64,13 @@
 			liveError = null;
 		} catch (e) {
 			liveError = e instanceof Error ? e.message : 'Chargement impossible';
+		} finally {
+			liveLoading = false;
+			liveLoaded = true;
 		}
 	}
 
-	async function loadHistory(params: { username?: string; page: number }) {
+	async function loadHistory(params: { username?: string; page: number; limit: number }) {
 		const id = ++historyRequest;
 		try {
 			const res = await api.admin.games(params);
@@ -72,6 +81,8 @@
 		} catch (e) {
 			if (id === historyRequest)
 				historyError = e instanceof Error ? e.message : 'Chargement impossible';
+		} finally {
+			if (id === historyRequest) historyLoaded = true;
 		}
 	}
 
@@ -111,7 +122,9 @@
 			<p class={closeFeedback.ok ? 'a-success' : 'a-error'}>{closeFeedback.text}</p>
 		{/if}
 
-		{#if rooms.length === 0}
+		{#if !liveLoaded}
+			<p class="a-empty">Chargement…</p>
+		{:else if rooms.length === 0}
 			<p class="a-empty">Aucune partie en cours.</p>
 		{:else}
 			<ul class="rooms">
@@ -193,13 +206,16 @@
 		<input
 			type="search"
 			placeholder="Filtrer par joueur"
+			maxlength="40"
 			bind:value={search}
 			oninput={() => (pageNumber = 1)}
 			aria-label="Filtrer par joueur"
 		/>
 	</div>
 	{#if historyError}<p class="a-error" role="alert">{historyError}</p>{/if}
-	{#if games.length === 0}
+	{#if !historyLoaded}
+		<p class="a-empty">Chargement…</p>
+	{:else if games.length === 0}
 		<p class="a-empty">Aucune partie trouvée.</p>
 	{:else}
 		<div class="a-table-wrap">

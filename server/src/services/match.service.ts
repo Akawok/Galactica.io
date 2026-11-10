@@ -325,16 +325,32 @@ export async function recordDesertion(opts: {
     });
   }
 
+  // A win by forfeit is a real win (stats and streak), but earns no XP so two
+  // accounts cannot farm levels by deserting on purpose
   let opponentPoints: number | null = null;
   if (mongoose.Types.ObjectId.isValid(opts.opponent.userId)) {
-    const opponent = await User.findByIdAndUpdate(
-      opts.opponent.userId,
-      {
-        $inc: { points: effectivePenalty, "stats.totalGames": 1 },
-      },
-      { new: true },
-    ).select("points");
-    opponentPoints = opponent?.points ?? null;
+    const before = await User.findById(opts.opponent.userId).select(
+      "stats.currentStreak stats.bestStreak",
+    );
+    if (before) {
+      const newStreak = (before.stats.currentStreak ?? 0) + 1;
+      const opponent = await User.findByIdAndUpdate(
+        opts.opponent.userId,
+        {
+          $inc: {
+            points: effectivePenalty,
+            "stats.wins": 1,
+            "stats.totalGames": 1,
+          },
+          $set: {
+            "stats.currentStreak": newStreak,
+            "stats.bestStreak": Math.max(before.stats.bestStreak ?? 0, newStreak),
+          },
+        },
+        { new: true },
+      ).select("points");
+      opponentPoints = opponent?.points ?? null;
+    }
   }
 
   return {
@@ -362,8 +378,6 @@ export async function saveGameRecord(opts: {
       winner: mongoose.Types.ObjectId.isValid(opts.winnerUserId)
         ? new mongoose.Types.ObjectId(opts.winnerUserId)
         : undefined,
-      rounds: [],
-      spectators: [],
       endedAt: new Date(),
     });
   } catch (err) {

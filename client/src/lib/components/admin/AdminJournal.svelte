@@ -13,6 +13,7 @@
 	let entries = $state<AuditEntry[]>([]);
 	let total = $state(0);
 	let error = $state<string | null>(null);
+	let loaded = $state(false);
 	const pageCount = $derived(Math.max(1, Math.ceil(total / PAGE_SIZE)));
 
 	let debounce: ReturnType<typeof setTimeout> | undefined;
@@ -23,13 +24,19 @@
 		const params = {
 			action: action || undefined,
 			username: username.trim() || undefined,
-			page: pageNumber
+			page: pageNumber,
+			limit: PAGE_SIZE
 		};
 		clearTimeout(debounce);
 		debounce = setTimeout(() => load(params), params.username ? 250 : 0);
 	});
 
-	async function load(params: { action?: string; username?: string; page: number }) {
+	async function load(params: {
+		action?: string;
+		username?: string;
+		page: number;
+		limit: number;
+	}) {
 		const id = ++requestId;
 		try {
 			const res = await api.admin.audit(params);
@@ -39,6 +46,8 @@
 			error = null;
 		} catch (e) {
 			if (id === requestId) error = e instanceof Error ? e.message : 'Chargement impossible';
+		} finally {
+			if (id === requestId) loaded = true;
 		}
 	}
 </script>
@@ -50,6 +59,7 @@
 		<input
 			type="search"
 			placeholder="Membre de l'équipe ou joueur visé"
+			maxlength="40"
 			bind:value={username}
 			oninput={() => (pageNumber = 1)}
 			aria-label="Filtrer par pseudo"
@@ -64,7 +74,9 @@
 
 	{#if error}<p class="a-error" role="alert">{error}</p>{/if}
 
-	{#if entries.length === 0}
+	{#if !loaded}
+		<p class="a-empty">Chargement…</p>
+	{:else if entries.length === 0}
 		<p class="a-empty">Aucune action.</p>
 	{:else}
 		<div class="a-table-wrap">

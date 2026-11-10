@@ -2,7 +2,7 @@
 	import { onDestroy, onMount } from 'svelte';
 	import { api, type AdminOverview } from '$lib/api';
 	import { ACTION_LABEL, describeAudit, formatNumber, timeAgo } from '$lib/admin/format';
-	import { getGrade } from '$lib/grades';
+	import { getGrade } from '$lib/shared/grades';
 	import RefreshCw from '@lucide/svelte/icons/refresh-cw';
 	import Megaphone from '@lucide/svelte/icons/megaphone';
 

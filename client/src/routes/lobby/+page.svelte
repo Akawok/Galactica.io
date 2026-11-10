@@ -5,8 +5,7 @@
 	import { connectSocket } from '$lib/stores/socket';
 	import { chatMessages, addMessage } from '$lib/stores/chat';
 	import { api } from '$lib/api';
-	import { xpForLevel, xpPercent } from '$lib/xp';
-	import { MAX_LEVEL } from '$lib/shared/xp';
+	import { MAX_LEVEL, xpForLevel, xpPercent } from '$lib/shared/xp';
 	import { GAME_EVENT, LOBBY_EVENT } from '$lib/shared/events';
 	import LoadoutRow from '$lib/components/LoadoutRow.svelte';
 	import GradeBadge from '$lib/components/GradeBadge.svelte';
@@ -36,7 +35,7 @@
 	import Warehouse from '@lucide/svelte/icons/warehouse';
 	import DoorOpen from '@lucide/svelte/icons/door-open';
 	import X from '@lucide/svelte/icons/x';
-	import { getGrade } from '$lib/grades';
+	import { getGrade } from '$lib/shared/grades';
 	import { findItem, itemFrameUrls, pingPongOrder } from '$lib/itemImages';
 	import type { Socket } from 'socket.io-client';
 
@@ -90,15 +89,20 @@
 		stats: { wins: number; losses: number; totalGames: number; desertions?: number };
 	}
 	let leaderboard = $state<LeaderboardPlayer[]>([]);
-	let lbSort = $state<'wins' | 'losses' | 'level' | 'desertions'>('wins');
-	const lbSorted = $derived(
-		[...leaderboard].sort((a, b) => {
-			if (lbSort === 'wins') return b.stats.wins - a.stats.wins;
-			if (lbSort === 'losses') return b.stats.losses - a.stats.losses;
-			if (lbSort === 'desertions') return (b.stats.desertions ?? 0) - (a.stats.desertions ?? 0);
-			return (b.level ?? 1) - (a.level ?? 1);
-		})
-	);
+	type LeaderboardSort = 'wins' | 'losses' | 'level' | 'desertions';
+	let lbSort = $state<LeaderboardSort>('wins');
+	let lbRequest = 0;
+	// The server ranks every player, so each tab asks for its own top 50
+	async function setLbSort(sort: LeaderboardSort) {
+		lbSort = sort;
+		const id = ++lbRequest;
+		try {
+			const { players } = await api.leaderboard.get(sort);
+			if (id === lbRequest) leaderboard = players;
+		} catch {
+			// The previous ranking stays displayed
+		}
+	}
 	const activeShipItem = $derived(findItem(allItems, 'ship', $currentUser?.activeShip));
 	let previewShip = $state<InventoryItem | null>(null);
 	const displayedShip = $derived(previewShip ?? activeShipItem);
@@ -143,6 +147,27 @@
 		return (stats.wins / stats.losses).toFixed(1);
 	}
 	const kd = $derived(computeKD(fullStats));
+	// The bar is full at a 5.0 ratio; no loss at all counts as full
+	const kdBarPct = $derived(
+		!fullStats || (fullStats.losses === 0 && fullStats.wins === 0)
+			? 0
+			: fullStats.losses === 0
+				? 100
+				: Math.min(100, (fullStats.wins / fullStats.losses / 5) * 100)
+	);
+
+	let lobbyError = $state<string | null>(null);
+	let chatError = $state<string | null>(null);
+	let messagesEl = $state<HTMLDivElement | null>(null);
+
+	// Keeps the newest message in view, unless the player scrolled up to read older ones
+	$effect.pre(() => {
+		void $chatMessages.length;
+		const el = messagesEl;
+		if (!el) return;
+		const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+		if (atBottom) queueMicrotask(() => (el.scrollTop = el.scrollHeight));
+	});
 
 	// Free items are given to every player at sign-up, they never belong in the shop
 	const forSale = $derived(
@@ -191,10 +216,46 @@
 		inventory.filter((i) => i.type === 'bullet' && i.bulletRole === 'secondary')
 	);
 
+	const joinLobby = () => socket?.emit(LOBBY_EVENT.USER_JOIN);
+	const onLobbyState = (data: { players: Player[]; rooms: Room[] }) => {
+		players = data.players;
+		rooms = data.rooms;
+	};
+	const onCreated = ({ roomId }: { roomId: string }) => {
+		createdRoom = roomId;
+		lobbyError = null;
+	};
+	const onCancelled = () => {
+		createdRoom = null;
+	};
+	const onNavigate = ({ roomId }: { roomId: string }) => {
+		goto(`/game/${roomId}`);
+	};
+	const onSpectating = ({ roomId }: { roomId: string }) => {
+		goto(`/game/${roomId}?spectate=1`);
+	};
+	const onGameError = ({ message }: { message: string }) => {
+		lobbyError = message;
+	};
+	const onChatBlocked = ({ reason }: { reason: string }) => {
+		chatError = reason;
+	};
+
 	onMount(async () => {
 		if (!$currentUser) return;
 
 		socket = connectSocket();
+		// Listeners go first so nothing sent during the API calls below is missed
+		socket.on(LOBBY_EVENT.STATE, onLobbyState);
+		socket.on(GAME_EVENT.CREATED, onCreated);
+		socket.on(GAME_EVENT.CANCELLED, onCancelled);
+		socket.on(GAME_EVENT.NAVIGATE, onNavigate);
+		socket.on(GAME_EVENT.SPECTATING, onSpectating);
+		socket.on(GAME_EVENT.ERROR, onGameError);
+		socket.on('chat:blocked', onChatBlocked);
+		// A reconnection gets a new socket id that the server does not know yet
+		socket.on('connect', joinLobby);
+		if (socket.connected) joinLobby();
 
 		const [statsResult, chatResult, shopResult, lbResult] = await Promise.allSettled([
 			api.stats.me(),
@@ -238,59 +299,44 @@
 					announcement: m.announcement
 				});
 		}
-
-		socket.emit(LOBBY_EVENT.USER_JOIN);
-
-		socket.on(LOBBY_EVENT.STATE, (data: { players: Player[]; rooms: Room[] }) => {
-			players = data.players;
-			rooms = data.rooms;
-		});
-
-		socket.on(GAME_EVENT.CREATED, ({ roomId }: { roomId: string }) => {
-			createdRoom = roomId;
-		});
-
-		socket.on(GAME_EVENT.NAVIGATE, ({ roomId }: { roomId: string }) => {
-			goto(`/game/${roomId}`);
-		});
-
-		socket.on(GAME_EVENT.SPECTATING, ({ roomId }: { roomId: string }) => {
-			goto(`/game/${roomId}`);
-		});
 	});
 
 	onDestroy(() => {
-		socket?.off(LOBBY_EVENT.STATE);
-		socket?.off(GAME_EVENT.CREATED);
-		socket?.off(GAME_EVENT.NAVIGATE);
-		socket?.off(GAME_EVENT.SPECTATING);
-		socket?.off(GAME_EVENT.CANCELLED);
+		socket?.off(LOBBY_EVENT.STATE, onLobbyState);
+		socket?.off(GAME_EVENT.CREATED, onCreated);
+		socket?.off(GAME_EVENT.CANCELLED, onCancelled);
+		socket?.off(GAME_EVENT.NAVIGATE, onNavigate);
+		socket?.off(GAME_EVENT.SPECTATING, onSpectating);
+		socket?.off(GAME_EVENT.ERROR, onGameError);
+		socket?.off('chat:blocked', onChatBlocked);
+		socket?.off('connect', joinLobby);
 		hoveredItem = null;
 	});
 
 	function createGame() {
+		lobbyError = null;
 		socket?.emit(GAME_EVENT.CREATE);
 	}
 
 	function cancelGame() {
 		if (!createdRoom) return;
 		socket?.emit(GAME_EVENT.CANCEL, { roomId: createdRoom });
-		socket?.once(GAME_EVENT.CANCELLED, () => {
-			createdRoom = null;
-		});
 	}
 
 	function joinGame(roomId: string) {
+		lobbyError = null;
 		socket?.emit(GAME_EVENT.JOIN, { roomId });
 	}
 
 	function spectate(roomId: string) {
+		lobbyError = null;
 		socket?.emit(GAME_EVENT.SPECTATE, { roomId });
 	}
 
 	function sendMessage(e: Event) {
 		e.preventDefault();
 		if (!chatInput.trim()) return;
+		chatError = null;
 		socket?.emit(LOBBY_EVENT.CHAT_MESSAGE, { message: chatInput.trim() });
 		chatInput = '';
 	}
@@ -300,9 +346,7 @@
 		equipLoading = item._id;
 		loadoutError = null;
 		try {
-			const type = item.type as 'ship' | 'bullet';
-			const role = item.bulletRole as 'primary' | 'secondary' | undefined;
-			const result = await api.shop.equip(type, item.sprite, role ?? undefined);
+			const result = await api.shop.equip(item.type as 'ship' | 'bullet', item.sprite);
 			auth.updateUser({
 				activeShip: result.activeShip,
 				activeBullet: result.activeBullet,
@@ -339,7 +383,7 @@
 	}
 
 	function statusLabel(status: string) {
-		return status === 'waiting' ? 'En attente' : status === 'playing' ? 'En cours' : status;
+		return status === 'waiting' ? 'En attente' : 'En cours';
 	}
 
 	function radarPath(values: number[]): string {
@@ -494,7 +538,7 @@
 				src="/assets/level-ring.webp"
 				alt=""
 				class="mega-ring-img"
-				onerror={(e: any) => (e.target.style.opacity = '0.1')}
+				onerror={(e) => ((e.currentTarget as HTMLImageElement).style.opacity = '0.1')}
 			/>
 			<img
 				src="/assets/level-ring-only-filled.webp"
@@ -547,6 +591,7 @@
 					<button class="btn btn-hero" onclick={createGame}>Lancer un duel</button>
 				{/if}
 			</div>
+			{#if lobbyError}<p class="loadout-error" role="alert">{lobbyError}</p>{/if}
 			{#if createdRoom}
 				<div class="secondary-actions">
 					<button class="btn-ghost" onclick={cancelGame}>
@@ -582,7 +627,7 @@
 
 			<div class="chat-col chat-col-main">
 				<div class="chat-col-title"><MessageSquare size={14} /> Chat</div>
-				<div class="messages">
+				<div class="messages" bind:this={messagesEl}>
 					{#each $chatMessages as msg}
 						{#if msg.announcement}
 							<div class="message announcement">
@@ -607,6 +652,7 @@
 						<p class="empty-text">Pas encore de message</p>
 					{/each}
 				</div>
+				{#if chatError}<p class="loadout-error" role="alert">{chatError}</p>{/if}
 				<form class="chat-form" onsubmit={sendMessage}>
 					<input
 						bind:value={chatInput}
@@ -733,10 +779,7 @@
 					<div class="stat-row">
 						<span class="stat-label">Ratio K/D</span>
 						<div class="stat-bar">
-							<div
-								class="stat-fill cyan"
-								style="width:{Math.min(100, (parseFloat(String(kd)) / 5) * 100)}%"
-							></div>
+							<div class="stat-fill cyan" style="width:{kdBarPct}%"></div>
 						</div>
 						<span class="stat-val">{kd}</span>
 					</div>
@@ -753,27 +796,27 @@
 				</div>
 			{:else}
 				<div class="lb-sort">
-					<button class="lb-stab" class:active={lbSort === 'wins'} onclick={() => (lbSort = 'wins')}
+					<button class="lb-stab" class:active={lbSort === 'wins'} onclick={() => setLbSort('wins')}
 						><Trophy size={14} /> Victoires</button
 					>
 					<button
 						class="lb-stab"
 						class:active={lbSort === 'losses'}
-						onclick={() => (lbSort = 'losses')}><Skull size={14} /> Défaites</button
+						onclick={() => setLbSort('losses')}><Skull size={14} /> Défaites</button
 					>
 					<button
 						class="lb-stab"
 						class:active={lbSort === 'level'}
-						onclick={() => (lbSort = 'level')}><Zap size={14} /> Niveau</button
+						onclick={() => setLbSort('level')}><Zap size={14} /> Niveau</button
 					>
 					<button
 						class="lb-stab"
 						class:active={lbSort === 'desertions'}
-						onclick={() => (lbSort = 'desertions')}><DoorOpen size={14} /> Désertions</button
+						onclick={() => setLbSort('desertions')}><DoorOpen size={14} /> Désertions</button
 					>
 				</div>
 				<div class="lb-list">
-					{#each lbSorted as p, i (p.username)}
+					{#each leaderboard as p, i (p.username)}
 						<div class="lb-row" class:lb-me={p.username === $currentUser?.username}>
 							<span class="lb-rank">{lbMedal(i)}</span>
 							<span class="lb-name"><GradeBadge level={p.level} /> {p.username}</span>
@@ -812,7 +855,7 @@
 									>Rejoindre</button
 								>
 							{/if}
-							{#if room.status === 'playing'}
+							{#if room.status === 'playing' || room.status === 'roundEnd'}
 								<button class="btn btn-secondary btn-sm" onclick={() => spectate(room.roomId)}
 									><Eye size={14} /> Regarder</button
 								>
@@ -975,16 +1018,6 @@
 	:global(.ltab svg),
 	:global(.lb-stab svg) {
 		color: inherit;
-	}
-
-	.panel-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		margin-bottom: 0.75rem;
-	}
-	.panel-header h2 {
-		margin-bottom: 0;
 	}
 
 	.left-col {
@@ -1799,16 +1832,6 @@
 		text-align: right;
 	}
 
-	.stats-summary {
-		background: rgba(8, 8, 28, 0.85);
-	}
-
-	.lb-panel {
-		display: flex;
-		flex-direction: column;
-		gap: 0.6rem;
-		min-height: 0;
-	}
 	.lb-sort {
 		display: flex;
 		gap: 0.35rem;

@@ -8,9 +8,5 @@
   },
   "devDependencies": {
     "concurrently": "^8.2.2"
-  },
-  "dependencies": {
-    "canvas": "^3.2.3",
-    "gif-frames": "^1.0.1"
   }
 }

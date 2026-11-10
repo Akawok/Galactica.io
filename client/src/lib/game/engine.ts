@@ -82,6 +82,12 @@ interface BulletPayload {
 	type: string;
 	sprite: string;
 }
+export interface GameStatePayload {
+	players: PlayerDelta[];
+	bulletsAdded: BulletPayload[];
+	bulletsRemoved: string[];
+	t: number;
+}
 interface StartPlayer extends PlayerState {
 	username: string;
 	level?: number;
@@ -94,7 +100,7 @@ interface StartPlayer extends PlayerState {
 	primaryBulletSpeed?: number;
 	dash?: boolean;
 }
-interface GameStartPayload {
+export interface GameStartPayload {
 	players: StartPlayer[];
 	config: { mapWidth: number; mapHeight: number };
 	t?: number;
@@ -165,6 +171,8 @@ function clampY(y: number): number {
 
 export class GameEngine {
 	private app: Application;
+	private initDone = false;
+	private destroyed = false;
 	private starfield!: Starfield;
 	private playerVisuals = new Map<string, PlayerVisual>();
 	private shipFrameUrls = new Map<string, string[]>();
@@ -247,6 +255,12 @@ export class GameEngine {
 			background: 0x050510,
 			antialias: true
 		});
+		// The page can be left while Pixi is still starting: finish the teardown here
+		if (this.destroyed) {
+			this.app.destroy(false);
+			return this;
+		}
+		this.initDone = true;
 
 		this.starfield = new Starfield(this.app, this.mapWidth, this.mapHeight);
 
@@ -542,6 +556,7 @@ export class GameEngine {
 		}
 
 		await Promise.all(Array.from(spritesToLoad).map((url) => Assets.load(url).catch(() => null)));
+		if (this.destroyed) return;
 
 		for (const p of newPlayers) {
 			if (this.playerVisuals.has(p.id)) continue;
@@ -661,12 +676,7 @@ export class GameEngine {
 		return id === this.myId && this.hasPredictedState;
 	}
 
-	onGameState(state: {
-		players: PlayerDelta[];
-		bulletsAdded: BulletPayload[];
-		bulletsRemoved: string[];
-		t: number;
-	}) {
+	onGameState(state: GameStatePayload) {
 		if (typeof state.t === 'number') this.updateClock(state.t);
 		const t = state.t;
 
@@ -1072,9 +1082,13 @@ export class GameEngine {
 	}
 
 	destroy() {
+		if (this.destroyed) return;
+		this.destroyed = true;
 		window.removeEventListener('keydown', this.onKeyDown);
 		window.removeEventListener('keyup', this.onKeyUp);
 		window.removeEventListener('blur', this.onBlur);
+		// Destroying Pixi before its init resolves throws, init() handles it instead
+		if (!this.initDone) return;
 		this.starfield?.destroy();
 		this.app.destroy(false);
 	}

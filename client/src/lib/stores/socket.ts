@@ -8,7 +8,7 @@ const SERVER_URL = import.meta.env.VITE_SERVER_URL ?? 'http://localhost:3000';
 
 let socketInstance: Socket | null = null;
 
-export const socketStore = writable<Socket | null>(null);
+// Why the server closed the session, shown on the login page
 export const sessionTerminated = writable<string | null>(null);
 
 export function getSocket(): Socket {
@@ -18,7 +18,6 @@ export function getSocket(): Socket {
 			transports: ['websocket'],
 			withCredentials: true
 		});
-		socketStore.set(socketInstance);
 	}
 	return socketInstance!;
 }
@@ -44,5 +43,4 @@ export function disconnectSocket() {
 		socketInstance.disconnect();
 	}
 	socketInstance = null;
-	socketStore.set(null);
 }

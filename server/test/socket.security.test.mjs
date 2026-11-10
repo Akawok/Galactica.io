@@ -246,3 +246,67 @@ describe("chat", () => {
     assert.equal(heard.length, before, "le message ne doit pas passer");
   });
 });
+
+describe("cycle de vie des parties", () => {
+  async function startDuel() {
+    const a = await joinedSocket("lifeA");
+    const b = await joinedSocket("lifeB");
+    const created = waitFor(a.socket, "game:created");
+    a.socket.emit("game:create");
+    const { roomId } = await created;
+    const started = waitFor(a.socket, "game:start", 3000);
+    b.socket.emit("game:join", { roomId });
+    assert.ok(await started, "la partie doit démarrer");
+    return { a, b, roomId };
+  }
+
+  test("un spectateur qui part n'arrête pas la partie", async () => {
+    const { a, roomId } = await startDuel();
+    const c = await joinedSocket("lifeC");
+    const spectating = waitFor(c.socket, "game:spectating");
+    c.socket.emit("game:spectate", { roomId });
+    assert.ok(await spectating);
+
+    c.socket.emit("game:leave", { roomId });
+    await sleep(300);
+    const state = await waitFor(a.socket, "game:state", 1000);
+    assert.ok(state, "les joueurs doivent continuer à recevoir l'état du jeu");
+    assert.equal(await waitFor(a.socket, "game:abandoned", 300), null);
+  });
+
+  test("après un abandon, l'adversaire peut relancer un duel", async () => {
+    const { a, b, roomId } = await startDuel();
+    const abandoned = waitFor(a.socket, "game:abandoned", 3000);
+    b.socket.emit("game:leave", { roomId });
+    assert.ok(await abandoned, "l'adversaire doit être prévenu");
+    await sleep(300);
+
+    const stats = await call("/stats/me", { jar: a.user.jar });
+    assert.equal(stats.body.user.stats.wins, 1, "l'abandon compte comme une victoire");
+    assert.equal(stats.body.user.stats.currentStreak, 1);
+
+    const created = waitFor(a.socket, "game:created", 2000);
+    a.socket.emit("game:create");
+    assert.ok(await created, "le joueur doit être libéré de l'ancienne partie");
+  });
+
+  test("la page de jeu peut redemander l'état si game:start est perdu", async () => {
+    const { b, roomId } = await startDuel();
+    const replay = waitFor(b.socket, "game:start", 2000);
+    b.socket.emit("game:ready", { roomId });
+    assert.ok(await replay);
+  });
+});
+
+describe("classement", () => {
+  test("trie selon l'onglet demandé et refuse les autres tris", async () => {
+    for (const sort of ["wins", "losses", "level", "desertions"]) {
+      const res = await call(`/leaderboard?sort=${sort}`);
+      assert.equal(res.status, 200);
+    }
+    const byLevel = await call("/leaderboard?sort=level");
+    const levels = byLevel.body.players.map((p) => p.level);
+    assert.deepEqual(levels, [...levels].sort((x, y) => y - x));
+    assert.equal((await call("/leaderboard?sort=points")).status, 400);
+  });
+});

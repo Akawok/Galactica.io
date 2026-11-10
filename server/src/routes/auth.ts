@@ -13,6 +13,7 @@ import {
   USERNAME_MIN,
   ValidationError,
   validatePassword,
+  emailKey,
 } from "../services/identity.service.js";
 import { config } from "../config.js";
 import { clearSession, issueSession } from "../services/session.service.js";
@@ -143,7 +144,7 @@ export async function authRoutes(app: FastifyInstance) {
       },
     },
     async (req, reply) => {
-      const email = req.body.email.trim().toLowerCase();
+      const email = emailKey(req.body.email);
       const user = await User.findOne({ email }).select("_id email").lean();
 
       if (user) {
@@ -210,7 +211,6 @@ export async function authRoutes(app: FastifyInstance) {
         {
           $set: {
             passwordHash: await hashPassword(password),
-            bannedUntil: null,
           },
           $inc: { tokenVersion: 1 },
         },

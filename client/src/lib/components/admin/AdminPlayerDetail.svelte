@@ -3,7 +3,8 @@
 	import { api, type AdminUserDetail, type Role } from '$lib/api';
 	import { currentUser } from '$lib/stores/auth';
 	import { BRANCHES } from '$lib/attributesUi';
-	import { getGrade } from '$lib/grades';
+	import { getGrade } from '$lib/shared/grades';
+	import { MAX_LEVEL } from '$lib/shared/xp';
 	import {
 		ACTION_LABEL,
 		PLAYER_STATUS_LABEL,
@@ -116,6 +117,16 @@
 	function saveResources() {
 		const u = user;
 		if (!u) return;
+		// An emptied number field reads as null, which the server would turn into 0
+		const values = [res.points, res.galactics, res.level, res.xp];
+		if (values.some((v) => typeof v !== 'number' || !Number.isInteger(v) || v < 0)) {
+			feedback = { ok: false, text: 'Indique un nombre entier positif dans chaque champ.' };
+			return;
+		}
+		if (res.level < 1 || res.level > MAX_LEVEL) {
+			feedback = { ok: false, text: `Le niveau va de 1 à ${MAX_LEVEL}.` };
+			return;
+		}
 		const changes: Record<string, number> = {};
 		if (res.points !== u.points) changes.points = res.points;
 		if (res.galactics !== u.galactics) changes.galactics = res.galactics;
@@ -317,7 +328,7 @@
 				<div class="res-grid">
 					<label class="a-field"><span>Crédits</span><input type="number" min="0" bind:value={res.points} /></label>
 					<label class="a-field"><span>Galactics</span><input type="number" min="0" bind:value={res.galactics} /></label>
-					<label class="a-field"><span>Niveau</span><input type="number" min="1" max="60" bind:value={res.level} /></label>
+					<label class="a-field"><span>Niveau</span><input type="number" min="1" max={MAX_LEVEL} bind:value={res.level} /></label>
 					<label class="a-field"><span>XP du niveau</span><input type="number" min="0" bind:value={res.xp} /></label>
 				</div>
 				<div class="line">

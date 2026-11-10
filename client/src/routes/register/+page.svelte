@@ -37,8 +37,8 @@
 			const { user } = await api.auth.register(username, email, password);
 			auth.login(user);
 			goto('/lobby');
-		} catch (err: any) {
-			error = err.message;
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Erreur serveur';
 		} finally {
 			loading = false;
 		}

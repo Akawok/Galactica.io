@@ -202,6 +202,7 @@
 		}
 		saving = true;
 		editError = null;
+		editDone = null;
 		try {
 			const { item } = await api.admin.updateItem(selected._id, changes);
 			replaceInList(item);
@@ -217,6 +218,7 @@
 		if (!selected || saving || editImages.length === 0) return;
 		saving = true;
 		editError = null;
+		editDone = null;
 		try {
 			const { item } = await api.admin.replaceImages(
 				selected._id,

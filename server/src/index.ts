@@ -185,6 +185,12 @@ const io = new Server(httpServer, {
   },
   transports: ["websocket"],
   allowUpgrades: false,
+  // CORS does not apply to a WebSocket upgrade: without this, any site could open one
+  // with the player's cookie. Clients without an Origin header are not browsers.
+  allowRequest: (req, callback) => {
+    const origin = req.headers.origin;
+    callback(null, !origin || origin === config.clientUrl);
+  },
   maxHttpBufferSize: 8 * 1024,
   pingTimeout: 20_000,
   connectTimeout: 10_000,
@@ -204,8 +210,6 @@ io.use(async (socket, next) => {
     }
 
     socket.data.userId = result.account.id;
-    socket.data.username = result.account.username;
-    socket.data.role = result.account.role;
     next();
   } catch {
     next(new Error("Token invalide"));

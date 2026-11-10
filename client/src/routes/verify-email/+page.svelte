@@ -18,8 +18,8 @@
 		try {
 			await api.auth.verifyEmail(token);
 			notice = 'Adresse email confirmée.';
-		} catch (err: any) {
-			error = err.message;
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Erreur serveur';
 		} finally {
 			checking = false;
 		}

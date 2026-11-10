@@ -6,7 +6,7 @@ import {
   effectiveAttributes,
 } from "../shared/attributes.js";
 
-export { xpForLevel, applyXP } from "../shared/xp.js";
+export { applyXP } from "../shared/xp.js";
 
 export const GAME_CONFIG = {
   MAP_WIDTH: 1280,
@@ -109,7 +109,6 @@ export interface BulletState {
   type: "normal" | "special";
   sprite: string;
   seq: number;
-  spawnT: number;
   viewLag: number;
 }
 
@@ -291,7 +290,6 @@ export function applyInput(
       type: "normal",
       sprite: player.bulletSprite,
       seq: input.seq,
-      spawnT: now,
       viewLag: player.viewLag,
     });
   }
@@ -319,7 +317,6 @@ export function applyInput(
       type: "special",
       sprite: player.bulletSpriteSecondary,
       seq: input.seq,
-      spawnT: now,
       viewLag: player.viewLag,
     });
   }

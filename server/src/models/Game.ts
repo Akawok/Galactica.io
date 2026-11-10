@@ -8,8 +8,6 @@ export interface IGame extends Document {
     score: number;
   }[];
   winner?: mongoose.Types.ObjectId;
-  rounds: { winner: mongoose.Types.ObjectId; duration: number }[];
-  spectators: mongoose.Types.ObjectId[];
   createdAt: Date;
   endedAt?: Date;
 }
@@ -24,15 +22,11 @@ const GameSchema = new Schema<IGame>({
     },
   ],
   winner: { type: Schema.Types.ObjectId, ref: "User" },
-  rounds: [
-    {
-      winner: { type: Schema.Types.ObjectId, ref: "User" },
-      duration: Number,
-    },
-  ],
-  spectators: [{ type: Schema.Types.ObjectId, ref: "User" }],
   createdAt: { type: Date, default: Date.now },
   endedAt: Date,
 });
+
+// Match history and the daily anti-farming count both look games up by player
+GameSchema.index({ "players.userId": 1, endedAt: -1 });
 
 export const Game = mongoose.model<IGame>("Game", GameSchema);

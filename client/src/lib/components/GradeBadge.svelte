@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { getGrade } from '$lib/grades';
+	import { getGrade } from '$lib/shared/grades';
 
 	let { level }: { level: number | undefined } = $props();
 	const grade = $derived(getGrade(level ?? 1));

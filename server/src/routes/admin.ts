@@ -10,7 +10,11 @@ import {
   getIO,
   socketCountForUser,
 } from "../sockets/registry.js";
-import { findOnlinePlayer, listOnlinePlayers } from "../sockets/lobby.js";
+import {
+  closeRoomsOfUser,
+  findOnlinePlayer,
+  listOnlinePlayers,
+} from "../sockets/lobby.js";
 import { AuditLog, recordAudit, type AuditAction } from "../models/AuditLog.js";
 import {
   ValidationError,
@@ -26,6 +30,13 @@ import {
   totalPoints,
 } from "../shared/attributes.js";
 import { MAX_LEVEL, xpForLevel } from "../shared/xp.js";
+
+// A moderator action must close the player's match neutrally, never as a desertion
+function forceLogout(userId: string, reason: string) {
+  const io = getIO();
+  if (io) closeRoomsOfUser(io, userId, "Un joueur a été retiré par la modération");
+  disconnectUserSockets(userId, reason);
+}
 
 const objectIdParam = {
   type: "object",
@@ -206,6 +217,8 @@ export async function adminRoutes(app: FastifyInstance) {
           .limit(20)
           .lean(),
         AuditLog.find({ targetId: user._id })
+          // Staff IPs are only for admins, like emails
+          .select(req.account!.role === "admin" ? "" : "-ip")
           .sort({ createdAt: -1 })
           .limit(30)
           .lean(),
@@ -274,7 +287,7 @@ export async function adminRoutes(app: FastifyInstance) {
           $inc: { tokenVersion: 1 },
         },
       );
-      disconnectUserSockets(String(target._id), "Compte suspendu");
+      forceLogout(String(target._id), "Compte suspendu");
 
       await audit(req, "ban", target, {
         bannedUntil,
@@ -342,7 +355,7 @@ export async function adminRoutes(app: FastifyInstance) {
       if (!target) return;
 
       await User.updateOne({ _id: target._id }, { $inc: { tokenVersion: 1 } });
-      disconnectUserSockets(String(target._id), "Tu as été déconnecté");
+      forceLogout(String(target._id), "Tu as été déconnecté");
       await audit(req, "kick", target);
       return reply.send({ ok: true });
     },
@@ -393,10 +406,7 @@ export async function adminRoutes(app: FastifyInstance) {
           return reply.code(409).send({ error: "Ce pseudo est déjà pris" });
         throw err;
       }
-      disconnectUserSockets(
-        String(target._id),
-        "Ton pseudo a été modifié, reconnecte-toi",
-      );
+      forceLogout(String(target._id), "Ton pseudo a été modifié, reconnecte-toi");
       await audit(
         req,
         "rename",
@@ -438,7 +448,7 @@ export async function adminRoutes(app: FastifyInstance) {
       if (!updated)
         return reply.code(404).send({ error: "Utilisateur non trouvé" });
 
-      disconnectUserSockets(userId, "Rôle modifié, reconnecte-toi");
+      forceLogout(userId, "Rôle modifié, reconnecte-toi");
       await audit(req, "role-change", updated, { role: req.body.role });
       return reply.send({ user: serializeUser(updated) });
     },
@@ -590,7 +600,7 @@ export async function adminRoutes(app: FastifyInstance) {
           .send({ error: "Recopie exactement le pseudo pour confirmer" });
       }
 
-      disconnectUserSockets(userId, "Compte supprimé");
+      forceLogout(userId, "Compte supprimé");
       await Promise.all([
         User.deleteOne({ _id: user._id }),
         Token.deleteMany({ userId: user._id }),
@@ -667,7 +677,8 @@ export async function adminRoutes(app: FastifyInstance) {
     },
     async (req, reply) => {
       const username = req.body?.username;
-      const filter = username ? { username } : {};
+      // Grade messages and announcements carry a username but are not that player's words
+      const filter = username ? { username, system: { $ne: true } } : {};
       const { deletedCount } = await ChatMessage.deleteMany(filter);
       getIO()?.emit("chat:removed", username ? { username } : { all: true });
       await recordAudit({

@@ -1,13 +1,13 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
-	import { isAuthenticated, auth, currentUser } from '$lib/stores/auth';
-	import { connectSocket, disconnectSocket } from '$lib/stores/socket';
-	import { addMessage, removeMessages } from '$lib/stores/chat';
+	import { isAuthenticated, isStaff, auth, currentUser } from '$lib/stores/auth';
+	import { disconnectSocket, getSocket } from '$lib/stores/socket';
+	import { addMessage, chatMessages, removeMessages } from '$lib/stores/chat';
 	import Rocket from '@lucide/svelte/icons/rocket';
 	import Gem from '@lucide/svelte/icons/gem';
 	import Wrench from '@lucide/svelte/icons/wrench';
-	import { getGrade } from '$lib/grades';
+	import { getGrade } from '$lib/shared/grades';
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
 
@@ -26,34 +26,36 @@
 		try {
 			const { user } = await api.auth.me();
 			auth.login(user);
-		} catch {
-			auth.clearLocal();
+		} catch (err) {
+			// A network failure (server restarting) says nothing about the session, keep it
+			if (!(err instanceof TypeError)) auth.clearLocal();
 		}
 	});
 
 	$effect(() => {
-		if (!$isAuthenticated && !PUBLIC_ROUTES.includes($page.url.pathname)) {
-			goto('/login');
-		}
+		if ($isAuthenticated) return;
+		// The socket keeps the identity it connected with, and the chat belongs to that session
+		disconnectSocket();
+		chatMessages.set([]);
+		if (!PUBLIC_ROUTES.includes($page.url.pathname)) goto('/login');
 	});
 
 	$effect(() => {
 		if (!$isAuthenticated) return;
-		import('$lib/stores/socket').then(({ getSocket }) => {
-			const socket = getSocket();
-			if (!socket) return;
-			socket.off('chat:message');
-			socket.on('chat:message', addMessage);
-			socket.off('chat:removed');
-			socket.on('chat:removed', removeMessages);
-		});
+		const socket = getSocket();
+		if (!socket) return;
+		socket.off('chat:message');
+		socket.on('chat:message', addMessage);
+		socket.off('chat:removed');
+		socket.on('chat:removed', removeMessages);
 	});
 
 	async function logout() {
-		disconnectSocket();
 		try {
 			await api.auth.logout();
-		} catch {}
+		} catch {
+			// The local session is cleared anyway
+		}
 		auth.clearLocal();
 		goto('/login');
 	}
@@ -68,7 +70,7 @@
 		<a href="/lobby" class="logo"><Rocket size={16} /> Galactica.io</a>
 		<div class="nav-center"></div>
 		<div class="nav-right">
-			{#if $currentUser?.role === 'admin' || $currentUser?.role === 'moderator'}
+			{#if $isStaff}
 				<a href="/admin" class="admin-link" title="Administration"><Wrench size={15} /> Admin</a>
 			{/if}
 			{#if $currentUser}

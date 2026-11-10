@@ -1,12 +1,16 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { get } from 'svelte/store';
 	import { auth } from '$lib/stores/auth';
+	import { sessionTerminated } from '$lib/stores/socket';
 	import { api } from '$lib/api';
 	import AuthCard from '$lib/components/AuthCard.svelte';
 
 	let email = $state('');
 	let password = $state('');
-	let error = $state('');
+	// Tells the player why they were sent back here (another device, suspension…)
+	let error = $state(get(sessionTerminated) ?? '');
+	sessionTerminated.set(null);
 	let loading = $state(false);
 
 	async function handleLogin(e: Event) {
@@ -17,8 +21,8 @@
 			const { user } = await api.auth.login(email, password);
 			auth.login(user);
 			goto('/lobby');
-		} catch (err: any) {
-			error = err.message;
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Erreur serveur';
 		} finally {
 			loading = false;
 		}

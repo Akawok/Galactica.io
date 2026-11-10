@@ -1,5 +1,3 @@
-export type GamePhase = 'waiting' | 'playing' | 'roundEnd' | 'matchEnd';
-
 export const GAME_EVENT = {
 	CREATE: 'game:create',
 	CANCEL: 'game:cancel',
@@ -25,10 +23,4 @@ export const LOBBY_EVENT = {
 	STATE: 'lobby:state',
 	USER_JOIN: 'user:join',
 	CHAT_MESSAGE: 'chat:message'
-} as const;
-
-export const DEFAULT_LOADOUT = {
-	ship: 'spaceship-01',
-	bulletPrimary: 'bullet1',
-	bulletSecondary: 'bullet1'
 } as const;

@@ -5,8 +5,7 @@
 	import { page } from '$app/stores';
 	import { currentUser, auth } from '$lib/stores/auth';
 	import { getSocket } from '$lib/stores/socket';
-	import type { GameEngine } from '$lib/game/engine';
-	import { api } from '$lib/api';
+	import type { GameEngine, GameStartPayload, GameStatePayload } from '$lib/game/engine';
 
 	type GameStatus = 'waiting' | 'playing' | 'roundEnd' | 'matchEnd';
 	type RewardNote =
@@ -47,40 +46,44 @@
 	} | null>(null);
 	let abandonResult = $state<{ deserter: string; creditsRecovered: number } | null>(null);
 	let closedReason = $state<string | null>(null);
-	let isSpectator = $state(false);
 
 	const roomId = $page.params.roomId;
+	const isSpectator = $page.url.searchParams.has('spectate');
+	let destroyed = false;
+	let roundTimer: ReturnType<typeof setTimeout> | null = null;
+	// game:start can arrive while Pixi is still loading, it is replayed once the engine is ready
+	let pendingStart: GameStartPayload | null = null;
+
+	const GAME_EVENTS = [
+		'game:start',
+		'game:state',
+		'game:roundEnd',
+		'game:roundStart',
+		'game:matchEnd',
+		'game:abandoned',
+		'game:closed'
+	];
 
 	onMount(async () => {
-		const user = $currentUser;
-		if (!user) {
+		if (!$currentUser) {
 			goto('/login');
 			return;
 		}
 
+		// The socket is only connected from the lobby: a reload or a direct link lands here without it
 		const socket = getSocket();
-		if (!socket) {
+		if (!socket?.connected) {
 			goto('/lobby');
 			return;
 		}
 
-		const spectatorFlag = sessionStorage.getItem(`spectator_${roomId}`);
-		isSpectator = !!spectatorFlag;
-
-		const { GameEngine } = await import('$lib/game/engine');
-		engine = new GameEngine(socket, socket.id!, isSpectator);
-		await engine.init(canvas);
-
-		if (isSpectator) {
-			socket.emit('game:spectateReady', { roomId });
-		}
-
-		socket.on('game:start', async (payload: any) => {
+		socket.on('game:start', (payload: GameStartPayload) => {
 			status = 'playing';
-			await engine?.onGameStart(payload);
+			if (engine) engine.onGameStart(payload);
+			else pendingStart = payload;
 		});
 
-		socket.on('game:state', (state: any) => {
+		socket.on('game:state', (state: GameStatePayload) => {
 			if (status === 'playing') engine?.onGameState(state);
 		});
 
@@ -91,7 +94,8 @@
 				roundResult = { winner: data.winner?.username ?? null, scores: data.scores };
 				engine?.pause();
 				engine?.updateScores(data.scores);
-				setTimeout(() => {
+				if (roundTimer) clearTimeout(roundTimer);
+				roundTimer = setTimeout(() => {
 					if (status === 'roundEnd') {
 						status = 'playing';
 						roundResult = null;
@@ -118,10 +122,10 @@
 				winner: { username: string };
 				pointsEarned: number;
 				newPoints: number | null;
-				xpGained: number | null;
-				newXP: number | null;
-				newLevel: number | null;
-				leveledUp: boolean;
+				xpGained?: number | null;
+				newXP?: number | null;
+				newLevel?: number | null;
+				leveledUp?: boolean;
 				galacticsGained?: number;
 				newGalactics?: number | null;
 				rewardNotes?: RewardNote[];
@@ -130,18 +134,19 @@
 				matchResult = {
 					winner: data.winner.username,
 					pointsEarned: data.pointsEarned,
-					xpGained: data.xpGained,
-					newLevel: data.newLevel,
-					leveledUp: data.leveledUp,
+					xpGained: data.xpGained ?? null,
+					newLevel: data.newLevel ?? null,
+					leveledUp: data.leveledUp ?? false,
 					galacticsGained: data.galacticsGained ?? 0,
 					rewardNotes: data.rewardNotes ?? []
 				};
-				const updates: any = {};
-				if (data.newPoints !== null) updates.points = data.newPoints;
-				if (data.newXP !== null) updates.xp = data.newXP;
-				if (data.newLevel !== null) updates.level = data.newLevel;
-				if (data.newGalactics !== null && data.newGalactics !== undefined)
-					updates.galactics = data.newGalactics;
+				// A spectator's payload carries no rewards, and absent fields must not wipe the profile
+				if (isSpectator) return;
+				const updates: { points?: number; xp?: number; level?: number; galactics?: number } = {};
+				if (data.newPoints != null) updates.points = data.newPoints;
+				if (data.newXP != null) updates.xp = data.newXP;
+				if (data.newLevel != null) updates.level = data.newLevel;
+				if (data.newGalactics != null) updates.galactics = data.newGalactics;
 				if (Object.keys(updates).length) auth.updateUser(updates);
 			}
 		);
@@ -168,25 +173,35 @@
 			engine?.pause();
 			closedReason = data.reason ?? 'Partie arrêtée par la modération';
 		});
+
+		const { GameEngine } = await import('$lib/game/engine');
+		if (destroyed) return;
+		const instance = new GameEngine(socket, socket.id!, isSpectator);
+		engine = instance;
+		await instance.init(canvas);
+		if (destroyed) return;
+
+		if (pendingStart) {
+			const payload = pendingStart;
+			pendingStart = null;
+			await instance.onGameStart(payload);
+		}
+		// Asks for the current state, in case game:start was sent before this page existed
+		socket.emit('game:ready', { roomId });
 	});
 
 	onDestroy(() => {
+		destroyed = true;
+		if (roundTimer) clearTimeout(roundTimer);
 		engine?.destroy();
 		const socket = getSocket();
 		if (status === 'playing' || status === 'roundEnd' || status === 'waiting') {
 			socket?.emit('game:leave', { roomId });
 		}
-		socket?.off('game:start');
-		socket?.off('game:state');
-		socket?.off('game:roundEnd');
-		socket?.off('game:roundStart');
-		socket?.off('game:matchEnd');
-		socket?.off('game:abandoned');
-		socket?.off('game:closed');
+		for (const event of GAME_EVENTS) socket?.off(event);
 	});
 
 	function backToLobby() {
-		sessionStorage.removeItem(`spectator_${roomId}`);
 		goto('/lobby');
 	}
 </script>
@@ -213,7 +228,7 @@
 					<h2>Égalité</h2>
 				{/if}
 				<div class="scores">
-					{#each Object.entries(roundResult.scores) as [id, score]}
+					{#each Object.entries(roundResult.scores) as [id, score] (id)}
 						<span>{score}</span>
 					{/each}
 				</div>
@@ -292,7 +307,7 @@
 						</div>
 					{/if}
 
-					{#each matchResult.rewardNotes as note}
+					{#each matchResult.rewardNotes as note, i (i)}
 						<p class="reward-note" class:bonus={note.kind === 'upset'}>{noteText(note, matchResult.winner === $currentUser?.username)}</p>
 					{/each}
 				{/if}

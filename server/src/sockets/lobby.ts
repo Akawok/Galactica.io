@@ -44,7 +44,7 @@ const EVENT_LIMITS: Record<string, { max: number; windowMs: number }> = {
   "game:cancel": { max: 20, windowMs: 60_000 },
   "game:join": { max: 20, windowMs: 60_000 },
   "game:spectate": { max: 20, windowMs: 60_000 },
-  "game:spectateReady": { max: 30, windowMs: 60_000 },
+  "game:ready": { max: 30, windowMs: 60_000 },
   "game:leave": { max: 30, windowMs: 60_000 },
   "chat:message": { max: 20, windowMs: 30_000 },
 };
@@ -156,74 +156,93 @@ function generateRoomId(): string {
   return randomBytes(8).toString("hex").toUpperCase();
 }
 
+// Single exit path for a room: stops its timers, frees every member and refreshes the lobby.
+// The room object stays readable afterwards, so callers can still emit results or save the match.
+export function teardownRoom(io: Server, room: RoomState) {
+  cleanupRoomInputs(io, room);
+  if (rooms.get(room.roomId) === room) rooms.delete(room.roomId);
+
+  const members = new Set([
+    ...(room.waitingPlayers ?? []),
+    ...room.players.keys(),
+    ...room.spectators,
+  ]);
+  for (const socketId of members) {
+    const p = connectedPlayers.get(socketId);
+    if (p && p.currentRoomId === room.roomId) {
+      p.status = "idle";
+      p.currentRoomId = undefined;
+    }
+    io.sockets.sockets.get(socketId)?.leave(room.roomId);
+  }
+  broadcastLobbyState(io);
+}
+
 async function handlePlayerLeave(io: Server, socketId: string, roomId: string) {
   const room = rooms.get(roomId);
   if (!room) return;
 
-  const player = connectedPlayers.get(socketId);
+  // A spectator leaving never affects the match
+  if (room.spectators.delete(socketId)) {
+    const spectator = connectedPlayers.get(socketId);
+    if (spectator) {
+      spectator.status = "idle";
+      spectator.currentRoomId = undefined;
+    }
+    io.sockets.sockets.get(socketId)?.leave(roomId);
+    broadcastLobbyState(io);
+    return;
+  }
 
   if (room.status === "waiting") {
-    const waitingPlayers = room.waitingPlayers ?? [];
-    if (waitingPlayers.includes(socketId)) {
-      rooms.delete(roomId);
-      if (player) player.status = "idle";
+    if ((room.waitingPlayers ?? []).includes(socketId)) {
       io.to(roomId).emit("game:cancelled", { roomId });
+      teardownRoom(io, room);
     }
     return;
   }
 
-  if (room.status === "playing" || room.status === "roundEnd") {
-    room.status = "matchEnd";
-    if (room.intervalId) clearInterval(room.intervalId);
+  if (room.status !== "playing" && room.status !== "roundEnd") return;
+  const leaverEntry = room.players.get(socketId);
+  if (!leaverEntry) return;
 
-    const opponentEntry = Array.from(room.players.entries()).find(
-      ([id]) => id !== socketId,
-    );
-    const leaverEntry = room.players.get(socketId);
+  // Stopped synchronously, before any await, so the next-round timer cannot restart the loop
+  room.status = "matchEnd";
+  teardownRoom(io, room);
 
-    if (opponentEntry && leaverEntry) {
-      const [opponentSocketId, opponent] = opponentEntry;
+  const opponentEntry = Array.from(room.players.entries()).find(
+    ([id]) => id !== socketId,
+  );
+  if (!opponentEntry) return;
+  const [opponentSocketId, opponent] = opponentEntry;
 
-      const desertion = await recordDesertion({
-        deserter: { userId: leaverEntry.userId },
-        opponent: { userId: opponent.userId },
-      });
+  const desertion = await recordDesertion({
+    deserter: { userId: leaverEntry.userId },
+    opponent: { userId: opponent.userId },
+  });
 
-      io.sockets.sockets.get(opponentSocketId)?.emit("game:abandoned", {
-        deserter: leaverEntry.username,
-        creditsRecovered: desertion?.penalty ?? 0,
-        newPoints: desertion?.opponentPoints ?? null,
-      });
-      for (const spectatorId of room.spectators) {
-        io.sockets.sockets.get(spectatorId)?.emit("game:abandoned", {
-          deserter: leaverEntry.username,
-          creditsRecovered: 0,
-          newPoints: null,
-        });
-      }
-
-      const allPlayers = Array.from(room.players.values());
-      await saveGameRecord({
-        roomId,
-        players: allPlayers.map((p) => ({
-          userId: p.userId,
-          username: p.username,
-          score: room.scores.get(p.id) ?? 0,
-        })),
-        winnerUserId: opponent.userId,
-      });
-    }
-
-    cleanupRoomInputs(io, room);
-    if (player) player.status = "idle";
-    rooms.delete(roomId);
-    return;
+  io.sockets.sockets.get(opponentSocketId)?.emit("game:abandoned", {
+    deserter: leaverEntry.username,
+    creditsRecovered: desertion?.penalty ?? 0,
+    newPoints: desertion?.opponentPoints ?? null,
+  });
+  for (const spectatorId of room.spectators) {
+    io.sockets.sockets.get(spectatorId)?.emit("game:abandoned", {
+      deserter: leaverEntry.username,
+      creditsRecovered: 0,
+      newPoints: null,
+    });
   }
 
-  if (room.spectators.has(socketId)) {
-    room.spectators.delete(socketId);
-    if (player) player.status = "idle";
-  }
+  await saveGameRecord({
+    roomId,
+    players: Array.from(room.players.values()).map((p) => ({
+      userId: p.userId,
+      username: p.username,
+      score: room.scores.get(p.id) ?? 0,
+    })),
+    winnerUserId: opponent.userId,
+  });
 }
 
 // Keeps the lobby list in sync after a match and tells everyone when someone reaches a new grade
@@ -251,7 +270,7 @@ export function announceLevelChange(
     timestamp: new Date(now),
     level: newLevel,
     system: true,
-  }).catch(() => {});
+  }).catch((err) => console.error("[chat] grade message not saved:", err));
   io.emit("chat:message", {
     id: String(_id),
     username,
@@ -275,6 +294,11 @@ export function registerLobbySocket(io: Server, socket: Socket) {
   trackSocket(socket, userId);
 
   guard(socket, "user:join", async () => {
+    // Coming back to the lobby means leaving any room this socket was still part of
+    const previous = connectedPlayers.get(socket.id);
+    if (previous?.currentRoomId) {
+      await handlePlayerLeave(io, socket.id, previous.currentRoomId);
+    }
     const user = await User.findById(userId)
       .select("username level activeShip activeBullet activeBulletSecondary")
       .lean();
@@ -338,11 +362,8 @@ export function registerLobbySocket(io: Server, socket: Socket) {
     if (!room || room.status !== "waiting") return;
     if (!(room.waitingPlayers ?? []).includes(socket.id)) return;
 
-    rooms.delete(roomId);
-    socket.leave(roomId);
-    if (player) player.status = "idle";
     socket.emit("game:cancelled", { roomId });
-    broadcastLobbyState(io);
+    teardownRoom(io, room);
   });
 
   guard(socket, "game:join", async (data: { roomId?: string }) => {
@@ -371,12 +392,9 @@ export function registerLobbySocket(io: Server, socket: Socket) {
 
     const abortJoin = (message: string) => {
       socket.emit("game:error", { message });
-      socket.leave(roomId);
-      player.status = "idle";
-      player.currentRoomId = undefined;
-      room.playerUserIds?.delete(player.userId);
-      rooms.delete(roomId);
-      broadcastLobbyState(io);
+      // The creator would otherwise keep waiting on a room that no longer exists
+      socket.to(roomId).emit("game:cancelled", { roomId });
+      teardownRoom(io, room);
     };
 
     const player1SocketId = waitingPlayers[0];
@@ -431,11 +449,13 @@ export function registerLobbySocket(io: Server, socket: Socket) {
     broadcastLobbyState(io);
   });
 
-  guard(socket, "game:spectateReady", (data: { roomId?: string }) => {
+  // Sent by the game page once it listens: game:start may have gone out before it existed
+  guard(socket, "game:ready", (data: { roomId?: string }) => {
     const roomId = validRoomId(data?.roomId);
     if (!roomId) return;
     const room = rooms.get(roomId);
-    if (!room || !room.spectators.has(socket.id)) return;
+    if (!room) return;
+    if (!room.spectators.has(socket.id) && !room.players.has(socket.id)) return;
     if (room.status !== "playing" && room.status !== "roundEnd") return;
     sendGameSnapshot(socket, room);
   });
@@ -506,7 +526,7 @@ export function registerLobbySocket(io: Server, socket: Socket) {
       message: sanitized,
       timestamp: new Date(now),
       level: player.level,
-    }).catch(() => {});
+    }).catch((err) => console.error("[chat] message not saved:", err));
     io.emit("chat:message", {
       id: String(_id),
       username: player.username,
@@ -582,28 +602,17 @@ export function closeRoomByAdmin(
   // Rewards are already being written, cutting now would leave a half-saved match
   if (room.status === "matchEnd") return "ending";
 
-  if (room.intervalId) clearInterval(room.intervalId);
   room.status = "matchEnd";
-  cleanupRoomInputs(io, room);
-  rooms.delete(roomId);
-
   io.to(roomId).emit("game:closed", { roomId, reason });
-
-  const members = new Set([
-    ...(room.waitingPlayers ?? []),
-    ...room.players.keys(),
-    ...room.spectators,
-  ]);
-  for (const socketId of members) {
-    const p = connectedPlayers.get(socketId);
-    if (p && p.currentRoomId === roomId) {
-      p.status = "idle";
-      p.currentRoomId = undefined;
-    }
-    io.sockets.sockets.get(socketId)?.leave(roomId);
-  }
-  broadcastLobbyState(io);
+  teardownRoom(io, room);
   return "closed";
+}
+
+// A moderator action that disconnects a player must not count as a desertion
+export function closeRoomsOfUser(io: Server, userId: string, reason: string) {
+  for (const room of Array.from(rooms.values())) {
+    if (room.playerUserIds?.has(userId)) closeRoomByAdmin(io, room.roomId, reason);
+  }
 }
 
 export async function postAnnouncement(

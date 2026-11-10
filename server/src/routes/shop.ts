@@ -1,37 +1,13 @@
 import type { FastifyInstance } from "fastify";
-import { Item, type IItem } from "../models/Item.js";
+import { Item } from "../models/Item.js";
 import { User } from "../models/User.js";
-import { withImages } from "../services/item-assets.service.js";
+import { SPRITE_PATTERN, withImages } from "../services/item-assets.service.js";
 
 export async function shopRoutes(app: FastifyInstance) {
   app.get("/shop/items", async (_req, reply) => {
     const items = await Item.find().lean();
     return reply.send({ items: await withImages(items) });
   });
-
-  app.get(
-    "/shop/inventory",
-    {
-      onRequest: [app.authenticate],
-    },
-    async (req, reply) => {
-      const id = req.account!.id;
-      const user = await User.findById(id)
-        .select(
-          "inventory activeShip activeBullet activeBulletSecondary points",
-        )
-        .populate<{ inventory: IItem[] }>("inventory");
-      if (!user)
-        return reply.code(404).send({ error: "Utilisateur non trouvé" });
-      return reply.send({
-        inventory: await withImages(user.inventory.map((i) => i.toObject())),
-        activeShip: user.activeShip,
-        activeBullet: user.activeBullet,
-        activeBulletSecondary: user.activeBulletSecondary ?? "bullet1",
-        points: user.points,
-      });
-    },
-  );
 
   app.post<{ Body: { itemId: string } }>(
     "/shop/buy",
@@ -97,7 +73,6 @@ export async function shopRoutes(app: FastifyInstance) {
     Body: {
       type: "ship" | "bullet";
       sprite: string;
-      role?: "primary" | "secondary";
     };
   }>(
     "/shop/equip",
@@ -107,10 +82,10 @@ export async function shopRoutes(app: FastifyInstance) {
         body: {
           type: "object",
           required: ["type", "sprite"],
+          additionalProperties: false,
           properties: {
             type: { type: "string", enum: ["ship", "bullet"] },
-            sprite: { type: "string" },
-            role: { type: "string", enum: ["primary", "secondary"] },
+            sprite: { type: "string", pattern: SPRITE_PATTERN },
           },
         },
       },

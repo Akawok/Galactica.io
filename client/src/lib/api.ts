@@ -16,8 +16,9 @@ function readCsrfCookie(): string | null {
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+	// Fastify rejects an empty body sent as JSON, so the header only goes with a body
 	const headers: Record<string, string> = {
-		'Content-Type': 'application/json',
+		...(options.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
 		...(options.headers as Record<string, string>)
 	};
 
@@ -65,79 +66,42 @@ function toQuery(params: Record<string, string | number | undefined>): string {
 export const api = {
 	auth: {
 		register: (username: string, email: string, password: string) =>
-			request<{ csrfToken: string; user: any }>('/auth/register', {
-				method: 'POST',
-				body: JSON.stringify({ username, email, password })
-			}),
-		logout: () => request<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
+			post<{ csrfToken: string; user: any }>('/auth/register', { username, email, password }),
+		logout: () => post('/auth/logout'),
 		login: (email: string, password: string) =>
-			request<{ csrfToken: string; user: any }>('/auth/login', {
-				method: 'POST',
-				body: JSON.stringify({ email, password })
-			}),
+			post<{ csrfToken: string; user: any }>('/auth/login', { email, password }),
 		me: () => request<{ user: any }>('/auth/me'),
 		forgotPassword: (email: string) =>
-			request<{ ok: boolean; message: string }>('/auth/forgot-password', {
-				method: 'POST',
-				body: JSON.stringify({ email })
-			}),
+			post<{ ok: boolean; message: string }>('/auth/forgot-password', { email }),
 		resetPassword: (token: string, password: string) =>
-			request<{ ok: boolean }>('/auth/reset-password', {
-				method: 'POST',
-				body: JSON.stringify({ token, password })
-			}),
+			post('/auth/reset-password', { token, password }),
 		sendVerification: () =>
-			request<{ ok: boolean; alreadyVerified?: boolean }>('/auth/send-verification', {
-				method: 'POST'
-			}),
+			post<{ ok: boolean; alreadyVerified?: boolean }>('/auth/send-verification'),
 		verifyEmail: (token: string) =>
-			request<{ ok: boolean }>('/auth/verify-email', {
-				method: 'POST',
-				body: JSON.stringify({ token })
-			})
+			post('/auth/verify-email', { token })
 	},
 	shop: {
 		items: () => request<{ items: any[] }>('/shop/items'),
-		inventory: () =>
-			request<{
-				inventory: any[];
-				activeShip: string;
-				activeBullet: string;
-				activeBulletSecondary: string;
-				points: number;
-			}>('/shop/inventory'),
 		buy: (itemId: string) =>
-			request<{ points: number; galactics: number; inventory: string[] }>('/shop/buy', {
-				method: 'POST',
-				body: JSON.stringify({ itemId })
-			}),
-		equip: (type: 'ship' | 'bullet', sprite: string, role?: 'primary' | 'secondary') =>
-			request<{ activeShip: string; activeBullet: string; activeBulletSecondary: string }>(
+			post<{ points: number; galactics: number; inventory: string[] }>('/shop/buy', { itemId }),
+		equip: (type: 'ship' | 'bullet', sprite: string) =>
+			post<{ activeShip: string; activeBullet: string; activeBulletSecondary: string }>(
 				'/shop/equip',
-				{
-					method: 'POST',
-					body: JSON.stringify({ type, sprite, role })
-				}
+				{ type, sprite }
 			)
 	},
 	attributes: {
 		save: (attributes: Attributes) =>
-			request<{ attributes: Attributes }>('/attributes', {
-				method: 'POST',
-				body: JSON.stringify({ attributes })
-			}),
+			post<{ attributes: Attributes }>('/attributes', { attributes }),
 		reset: () =>
-			request<{ attributes: Attributes; galactics: number; respecCost: number }>(
-				'/attributes/reset',
-				{ method: 'POST', body: JSON.stringify({}) }
-			)
+			post<{ attributes: Attributes; galactics: number; respecCost: number }>('/attributes/reset')
 	},
 	stats: {
-		me: () => request<{ user: any }>('/stats/me'),
-		get: (userId: string) => request<{ user: any; games: any[] }>(`/stats/${userId}`)
+		me: () => request<{ user: any }>('/stats/me')
 	},
 	leaderboard: {
-		get: () => request<{ players: any[] }>('/leaderboard')
+		get: (sort: 'wins' | 'losses' | 'level' | 'desertions' = 'wins') =>
+			request<{ players: any[] }>(`/leaderboard${toQuery({ sort })}`)
 	},
 	chat: {
 		history: () => request<{ messages: any[] }>('/chat/history')
@@ -170,7 +134,7 @@ export const api = {
 		liveGames: () => request<{ rooms: LiveRoom[]; online: OnlinePlayer[] }>('/admin/games/live'),
 		closeGame: (roomId: string, reason?: string) =>
 			post(`/admin/games/${roomId}/close`, reason ? { reason } : {}),
-		games: (params: { username?: string; page?: number }) =>
+		games: (params: { username?: string; page?: number; limit?: number }) =>
 			request<Paged<{ games: AdminGame[] }>>(`/admin/games${toQuery(params)}`),
 		chat: (params: { username?: string }) =>
 			request<{ messages: AdminChatMessage[] }>(`/admin/chat${toQuery(params)}`),
@@ -178,11 +142,11 @@ export const api = {
 		purgeChat: (username?: string) =>
 			post<{ deletedCount: number }>('/admin/chat/purge', username ? { username } : {}),
 		announce: (message: string) => post<{ id: string }>('/admin/announce', { message }),
-		audit: (params: { page?: number; action?: string; username?: string }) =>
+		audit: (params: { page?: number; limit?: number; action?: string; username?: string }) =>
 			request<Paged<{ entries: AuditEntry[] }>>(`/admin/audit${toQuery(params)}`),
 		items: () => request<{ items: any[] }>('/admin/items'),
 		createItem: (item: NewItem) =>
-			request<{ item: any }>('/admin/items', { method: 'POST', body: JSON.stringify(item) }),
+			post<{ item: any }>('/admin/items', item),
 		updateItem: (itemId: string, changes: ItemChanges) =>
 			request<{ item: any }>(`/admin/items/${itemId}`, {
 				method: 'PATCH',

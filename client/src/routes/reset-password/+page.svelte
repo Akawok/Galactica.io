@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { api } from '$lib/api';
@@ -10,6 +11,8 @@
 	let notice = $state('');
 	let loading = $state(false);
 	let done = $state(false);
+	let redirectTimer: ReturnType<typeof setTimeout> | undefined;
+	onDestroy(() => clearTimeout(redirectTimer));
 
 	const token = $derived($page.url.searchParams.get('token') ?? '');
 
@@ -40,9 +43,9 @@
 			await api.auth.resetPassword(token, password);
 			done = true;
 			notice = 'Mot de passe modifié. Redirection vers la connexion...';
-			setTimeout(() => goto('/login'), 1800);
-		} catch (err: any) {
-			error = err.message;
+			redirectTimer = setTimeout(() => goto('/login'), 1800);
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'Erreur serveur';
 		} finally {
 			loading = false;
 		}

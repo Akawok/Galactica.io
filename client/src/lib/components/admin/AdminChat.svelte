@@ -11,6 +11,7 @@
 	let feedback = $state<string | null>(null);
 	let busy = $state(false);
 	let confirmPurge = $state(false);
+	let loaded = $state(false);
 
 	let debounce: ReturnType<typeof setTimeout> | undefined;
 	let requestId = 0;
@@ -34,6 +35,8 @@
 			error = null;
 		} catch (e) {
 			if (id === requestId) error = e instanceof Error ? e.message : 'Chargement impossible';
+		} finally {
+			if (id === requestId) loaded = true;
 		}
 	}
 
@@ -79,11 +82,12 @@
 </script>
 
 <section class="a-panel">
-	<h2>Messages des dernières 24 h</h2>
+	<h2>Derniers messages</h2>
 	<div class="a-toolbar">
 		<input
 			type="search"
 			placeholder="Filtrer par pseudo"
+			maxlength="40"
 			bind:value={username}
 			aria-label="Filtrer par pseudo"
 		/>
@@ -102,7 +106,9 @@
 	{#if error}<p class="a-error" role="alert">{error}</p>{/if}
 	{#if feedback}<p class="a-success">{feedback}</p>{/if}
 
-	{#if messages.length === 0}
+	{#if !loaded}
+		<p class="a-empty">Chargement…</p>
+	{:else if messages.length === 0}
 		<p class="a-empty">Aucun message.</p>
 	{:else}
 		<ul class="messages">

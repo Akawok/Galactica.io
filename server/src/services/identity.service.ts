@@ -139,9 +139,15 @@ function canonicalVariants(username: string): string[] {
   return variants;
 }
 
+// Lookup form of an email, without validation: login and reset must match what sign-up stored
+export function emailKey(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  return stripInvisible(raw.normalize("NFKC")).trim().toLowerCase();
+}
+
 export function normalizeEmail(raw: unknown): string {
   if (typeof raw !== "string") throw new ValidationError("Email invalide");
-  const email = stripInvisible(raw.normalize("NFKC")).trim().toLowerCase();
+  const email = emailKey(raw);
   if (email.length > 254 || !/^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/.test(email)) {
     throw new ValidationError("Email invalide");
   }

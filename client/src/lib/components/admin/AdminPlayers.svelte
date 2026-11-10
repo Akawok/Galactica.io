@@ -85,6 +85,7 @@
 			<input
 				type="search"
 				placeholder={isAdmin ? 'Pseudo, email ou identifiant' : 'Pseudo ou identifiant'}
+				maxlength="60"
 				bind:value={q}
 				oninput={() => (pageNumber = 1)}
 				aria-label="Rechercher un joueur"
