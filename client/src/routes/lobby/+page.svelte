@@ -74,7 +74,6 @@
 	let ownedIds = $state<Set<string>>(new Set());
 
 	interface LeaderboardPlayer {
-		_id: string;
 		username: string;
 		level: number;
 		stats: { wins: number; losses: number; totalGames: number; desertions?: number };
@@ -505,7 +504,7 @@
 							</button>
 						</div>
 					{:else}
-						<p class="empty-text">Tous les items sont déjà possédés !</p>
+						<p class="empty-text">Tu as déjà tout.</p>
 					{/each}
 				</div>
 			{/if}
@@ -560,7 +559,7 @@
 				{#if createdRoom}
 					<button class="btn btn-hero" disabled><Clock size={14} /> En attente…</button>
 				{:else}
-					<button class="btn btn-hero" onclick={createGame}>+ Lancer un Duel 1v1</button>
+					<button class="btn btn-hero" onclick={createGame}>Lancer un duel</button>
 				{/if}
 			</div>
 			{#if createdRoom}
@@ -588,7 +587,7 @@
 							</span>
 						</div>
 					{:else}
-						<p class="empty-text">Aucun joueur…</p>
+						<p class="empty-text">Personne en ligne</p>
 					{/each}
 				</div>
 			</div>
@@ -605,7 +604,7 @@
 							<span class="msg-text">{msg.message}</span>
 						</div>
 					{:else}
-						<p class="empty-text">Aucun message…</p>
+						<p class="empty-text">Pas encore de message</p>
 					{/each}
 				</div>
 				<form class="chat-form" onsubmit={sendMessage}>
@@ -723,14 +722,14 @@
 			{#if rightTab === 'stats'}
 				<div class="stat-rows">
 					<div class="stat-row">
-						<span class="stat-label">Taux de Victoire</span>
+						<span class="stat-label">Taux de victoire</span>
 						<div class="stat-bar">
 							<div class="stat-fill cyan" style="width:{winrate}%"></div>
 						</div>
 						<span class="stat-val">{winrate}%</span>
 					</div>
 					<div class="stat-row">
-						<span class="stat-label">K/D Ratio</span>
+						<span class="stat-label">Ratio K/D</span>
 						<div class="stat-bar">
 							<div
 								class="stat-fill cyan"
@@ -740,7 +739,7 @@
 						<span class="stat-val">{kd}</span>
 					</div>
 					<div class="stat-row">
-						<span class="stat-label">Meilleure Série</span>
+						<span class="stat-label">Meilleure série</span>
 						<div class="stat-bar">
 							<div
 								class="stat-fill cyan"
@@ -753,7 +752,7 @@
 			{:else}
 				<div class="lb-sort">
 					<button class="lb-stab" class:active={lbSort === 'wins'} onclick={() => (lbSort = 'wins')}
-						><Trophy size={14} /> Wins</button
+						><Trophy size={14} /> Victoires</button
 					>
 					<button
 						class="lb-stab"
@@ -772,7 +771,7 @@
 					>
 				</div>
 				<div class="lb-list">
-					{#each lbSorted as p, i (p._id)}
+					{#each lbSorted as p, i (p.username)}
 						<div class="lb-row" class:lb-me={p.username === $currentUser?.username}>
 							<span class="lb-rank">{lbMedal(i)}</span>
 							<span class="lb-name">{p.username}</span>
@@ -784,7 +783,7 @@
 							</span>
 						</div>
 					{:else}
-						<p class="empty-text">Aucun joueur…</p>
+						<p class="empty-text">Personne pour l'instant</p>
 					{/each}
 				</div>
 			{/if}
@@ -819,7 +818,7 @@
 						</div>
 					</div>
 				{:else}
-					{#if !createdRoom}<p class="empty-text">Aucun duel…</p>{/if}
+					{#if !createdRoom}<p class="empty-text">Aucun duel en cours</p>{/if}
 				{/each}
 			</div>
 		</section>

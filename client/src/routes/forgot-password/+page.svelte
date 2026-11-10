@@ -27,7 +27,7 @@
 
 <AuthCard
 	title="Mot de passe oublié"
-	subtitle="Reçois un lien pour en choisir un nouveau"
+	subtitle="On t'envoie un lien par mail"
 	{error}
 	{notice}
 	onsubmit={handleSubmit}

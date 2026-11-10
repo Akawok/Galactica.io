@@ -51,7 +51,7 @@
 
 <AuthCard
 	title="Nouveau mot de passe"
-	subtitle={token ? 'Choisis un mot de passe solide' : 'Lien invalide'}
+	subtitle={token ? 'Choisis ton nouveau mot de passe' : 'Lien invalide'}
 	{error}
 	{notice}
 	onsubmit={handleSubmit}

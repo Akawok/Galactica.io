@@ -12,9 +12,9 @@ export interface Item {
 export type ItemTab = 'ship' | 'primary' | 'secondary';
 
 export const ITEM_TABS: { key: ItemTab; label: string }[] = [
-	{ key: 'ship', label: '🚀 Vaisseaux' },
-	{ key: 'primary', label: '🔫 Tir principal' },
-	{ key: 'secondary', label: '💥 Tir secondaire' }
+	{ key: 'ship', label: 'Vaisseaux' },
+	{ key: 'primary', label: 'Tir principal' },
+	{ key: 'secondary', label: 'Tir secondaire' }
 ];
 
 export function filterByTab(items: Item[], tab: ItemTab): Item[] {

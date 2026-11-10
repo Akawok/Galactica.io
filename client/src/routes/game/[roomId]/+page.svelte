@@ -173,9 +173,9 @@
 		<div class="overlay semi">
 			<div class="overlay-card">
 				{#if roundResult.winner}
-					<h2>🏆 {roundResult.winner} remporte la manche !</h2>
+					<h2>{roundResult.winner} gagne la manche</h2>
 				{:else}
-					<h2>⚡ Manche nulle !</h2>
+					<h2>Égalité</h2>
 				{/if}
 				<div class="scores">
 					{#each Object.entries(roundResult.scores) as [id, score]}
@@ -196,10 +196,10 @@
 					<p>La partie est terminée</p>
 				{:else if abandonResult.creditsRecovered > 0}
 					<p>
-						Tu saisis <strong>+{abandonResult.creditsRecovered} Crédits</strong> sur sa caution
+						Tu récupères <strong>+{abandonResult.creditsRecovered} Crédits</strong> sur sa caution
 					</p>
 				{:else}
-					<p>Le déserteur n'avait aucun crédit à saisir</p>
+					<p>Il n'avait plus un crédit, rien à récupérer</p>
 				{/if}
 				<button class="btn btn-primary" onclick={backToLobby}>Retour au lobby</button>
 			</div>
@@ -216,7 +216,7 @@
 				{:else}
 					<div class="winner-emoji">💫</div>
 					<h2>{matchResult.winner} a gagné</h2>
-					<p>Meilleure chance la prochaine fois</p>
+					<p>Ce sera pour la prochaine</p>
 					{#if matchResult.pointsEarned > 0}
 						<p><strong>+{matchResult.pointsEarned} Crédits</strong> de consolation</p>
 					{/if}
@@ -225,7 +225,7 @@
 				{#if matchResult.xpGained !== null}
 					<div class="xp-reward">
 						{#if matchResult.leveledUp}
-							<span class="levelup-badge">🎉 Niveau {matchResult.newLevel} !</span>
+							<span class="levelup-badge">Niveau {matchResult.newLevel}</span>
 						{/if}
 						{#if matchResult.galacticsGained > 0}
 							<span class="galactics-gained">

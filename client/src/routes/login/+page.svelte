@@ -27,7 +27,7 @@
 
 <AuthCard
 	title="Galactica.io"
-	subtitle="Connecte-toi pour rejoindre la bataille"
+	subtitle="Connecte-toi pour jouer"
 	{error}
 	onsubmit={handleLogin}
 >

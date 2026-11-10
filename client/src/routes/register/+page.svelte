@@ -47,7 +47,7 @@
 
 <AuthCard
 	title="Galactica.io"
-	subtitle="Crée ton compte pilote"
+	subtitle="Crée ton compte"
 	{error}
 	onsubmit={handleRegister}
 >

@@ -49,7 +49,7 @@
 			alt={item.name}
 			onerror={(e: any) => (e.target.style.display = 'none')}
 		/>
-		{#if active}<span class="popover-badge">✅ Équipé</span>{/if}
+		{#if active}<span class="popover-badge">Équipé</span>{/if}
 	</div>
 	<div class="popover-body">
 		<h4>{item.name}</h4>
@@ -61,10 +61,8 @@
 				{/each}
 			</div>
 		{/if}
-		{#if active}
-			<span class="popover-equipped">En service</span>
-		{:else}
-			<span class="popover-hint">Cliquer pour équiper</span>
+		{#if !active}
+			<span class="popover-hint">Clic pour équiper</span>
 		{/if}
 	</div>
 </div>
@@ -142,11 +140,6 @@
 	}
 	.popover-stat strong {
 		color: #a0a8ff;
-	}
-	.popover-equipped {
-		font-size: 0.75rem;
-		color: #80e880;
-		font-weight: 600;
 	}
 	.popover-hint {
 		font-size: 0.7rem;

@@ -28,7 +28,7 @@
 
 <AuthCard
 	title="Vérification"
-	subtitle="Confirmation de ton adresse email"
+	subtitle="Vérification de ton email"
 	{error}
 	{notice}
 	onsubmit={(e) => e.preventDefault()}
