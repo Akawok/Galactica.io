@@ -7,7 +7,17 @@ export type AuditAction =
   | "role-change"
   | "chat-purge"
   | "item-create"
-  | "item-update";
+  | "item-update"
+  | "kick"
+  | "rename"
+  | "resources"
+  | "reset-attributes"
+  | "verify-email"
+  | "send-reset"
+  | "delete-account"
+  | "game-close"
+  | "chat-delete"
+  | "announce";
 
 export interface IAuditLog extends Document {
   action: AuditAction;
@@ -31,6 +41,16 @@ const AuditLogSchema = new Schema<IAuditLog>({
       "chat-purge",
       "item-create",
       "item-update",
+      "kick",
+      "rename",
+      "resources",
+      "reset-attributes",
+      "verify-email",
+      "send-reset",
+      "delete-account",
+      "game-close",
+      "chat-delete",
+      "announce",
     ],
     required: true,
   },
@@ -42,6 +62,8 @@ const AuditLogSchema = new Schema<IAuditLog>({
   ip: String,
   createdAt: { type: Date, default: Date.now, index: true },
 });
+
+AuditLogSchema.index({ targetId: 1, createdAt: -1 });
 
 export const AuditLog = mongoose.model<IAuditLog>("AuditLog", AuditLogSchema);
 

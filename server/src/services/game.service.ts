@@ -123,6 +123,7 @@ export interface RoomState {
   roundStartTime: number;
   ownerUserId?: string;
   playerUserIds?: Set<string>;
+  createdAt?: number;
   intervalId?: ReturnType<typeof setInterval>;
   nextRoundTimeout?: ReturnType<typeof setTimeout>;
   waitingPlayers?: string[];

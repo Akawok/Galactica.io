@@ -40,3 +40,7 @@ export function disconnectUserSockets(userId: string, reason: string) {
     socket.disconnect(true);
   }
 }
+
+export function getIO(): Server | null {
+  return io;
+}

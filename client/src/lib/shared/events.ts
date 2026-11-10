@@ -17,6 +17,7 @@ export const GAME_EVENT = {
 	ROUND_END: 'game:roundEnd',
 	MATCH_END: 'game:matchEnd',
 	ABANDONED: 'game:abandoned',
+	CLOSED: 'game:closed',
 	ERROR: 'game:error'
 } as const;
 

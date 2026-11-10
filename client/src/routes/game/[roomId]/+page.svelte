@@ -46,6 +46,7 @@
 		rewardNotes: RewardNote[];
 	} | null>(null);
 	let abandonResult = $state<{ deserter: string; creditsRecovered: number } | null>(null);
+	let closedReason = $state<string | null>(null);
 	let isSpectator = $state(false);
 
 	const roomId = $page.params.roomId;
@@ -159,6 +160,14 @@
 				}
 			}
 		);
+
+		socket.on('game:closed', (data: { reason?: string }) => {
+			status = 'matchEnd';
+			matchResult = null;
+			abandonResult = null;
+			engine?.pause();
+			closedReason = data.reason ?? 'Partie arrêtée par la modération';
+		});
 	});
 
 	onDestroy(() => {
@@ -173,6 +182,7 @@
 		socket?.off('game:roundStart');
 		socket?.off('game:matchEnd');
 		socket?.off('game:abandoned');
+		socket?.off('game:closed');
 	});
 
 	function backToLobby() {
@@ -208,6 +218,18 @@
 					{/each}
 				</div>
 				<p class="next-round">Prochaine manche dans 3s…</p>
+			</div>
+		</div>
+	{/if}
+
+	{#if status === 'matchEnd' && closedReason}
+		<div class="overlay">
+			<div class="overlay-card">
+				<div class="winner-emoji">🛑</div>
+				<h2>Partie arrêtée</h2>
+				<p>{closedReason}</p>
+				<p class="reward-note">Personne ne gagne ni ne perd quoi que ce soit.</p>
+				<button class="btn btn-primary" onclick={backToLobby}>Retour au lobby</button>
 			</div>
 		</div>
 	{/if}

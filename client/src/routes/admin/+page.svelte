@@ -1,243 +1,54 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
+	import { page } from '$app/stores';
 	import { currentUser } from '$lib/stores/auth';
-	import { api, type ItemChanges } from '$lib/api';
-	import { ITEM_TABS, filterByTab, type Item, type ItemTab } from '$lib/itemFilter';
-	import { itemFrameUrls } from '$lib/itemImages';
-	import ItemPreview from '$lib/components/ItemPreview.svelte';
-	import Gem from '@lucide/svelte/icons/gem';
-	import Plus from '@lucide/svelte/icons/plus';
+	import AdminOverview from '$lib/components/admin/AdminOverview.svelte';
+	import AdminPlayers from '$lib/components/admin/AdminPlayers.svelte';
+	import AdminGames from '$lib/components/admin/AdminGames.svelte';
+	import AdminChat from '$lib/components/admin/AdminChat.svelte';
+	import AdminShop from '$lib/components/admin/AdminShop.svelte';
+	import AdminJournal from '$lib/components/admin/AdminJournal.svelte';
 	import ArrowLeft from '@lucide/svelte/icons/arrow-left';
+	import LayoutDashboard from '@lucide/svelte/icons/layout-dashboard';
+	import Users from '@lucide/svelte/icons/users';
+	import Swords from '@lucide/svelte/icons/swords';
+	import MessageSquare from '@lucide/svelte/icons/message-square';
+	import Store from '@lucide/svelte/icons/store';
+	import ScrollText from '@lucide/svelte/icons/scroll-text';
 
-	interface PickedImage {
-		name: string;
-		dataUrl: string;
-		base64: string;
+	type TabKey = 'overview' | 'players' | 'games' | 'chat' | 'shop' | 'journal';
+
+	const TABS: { key: TabKey; label: string; icon: typeof Users; adminOnly?: boolean }[] = [
+		{ key: 'overview', label: "Vue d'ensemble", icon: LayoutDashboard },
+		{ key: 'players', label: 'Joueurs', icon: Users },
+		{ key: 'games', label: 'Parties', icon: Swords },
+		{ key: 'chat', label: 'Chat', icon: MessageSquare },
+		{ key: 'shop', label: 'Boutique', icon: Store, adminOnly: true },
+		{ key: 'journal', label: 'Journal', icon: ScrollText, adminOnly: true }
+	];
+
+	const role = $derived($currentUser?.role ?? 'user');
+	const isAdmin = $derived(role === 'admin');
+	const isStaff = $derived(role === 'admin' || role === 'moderator');
+	const tabs = $derived(TABS.filter((t) => isAdmin || !t.adminOnly));
+
+	const tab = $derived.by(() => {
+		const wanted = $page.url.searchParams.get('tab') as TabKey | null;
+		return tabs.find((t) => t.key === wanted)?.key ?? 'overview';
+	});
+	const userId = $derived($page.url.searchParams.get('user'));
+
+	function navigate(next: TabKey, extra: Record<string, string> = {}) {
+		const params = new URLSearchParams({ tab: next, ...extra });
+		goto(`?${params}`, { replaceState: false, noScroll: true, keepFocus: true });
 	}
 
-	const MAX_FRAMES = 8;
-	const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
-	const ACCEPTED_TYPES = ['image/webp', 'image/png'];
-	const TYPE_FOLDER: Record<string, string> = { ship: 'spaceships', bullet: 'bullets' };
-
-	const isAdmin = $derived($currentUser?.role === 'admin');
-
-	let items = $state<Item[]>([]);
-	let loading = $state(true);
-	let listError = $state<string | null>(null);
-	let listTab = $state<ItemTab>('ship');
-	const listed = $derived(filterByTab(items, listTab));
-
-	let kind = $state<ItemTab>('ship');
-	let name = $state('');
-	let sprite = $state('');
-	let spriteTouched = $state(false);
-	let description = $state('');
-	let price = $state(0);
-	let priceGalactics = $state(0);
-	let newImages = $state<PickedImage[]>([]);
-	let creating = $state(false);
-	let createError = $state<string | null>(null);
-	let createdName = $state<string | null>(null);
-
-	const createType = $derived(kind === 'ship' ? 'ship' : 'bullet');
-	const effectiveSprite = $derived(spriteTouched ? sprite : slugify(name));
-
-	let selected = $state<Item | null>(null);
-	let editName = $state('');
-	let editDescription = $state('');
-	let editPrice = $state(0);
-	let editGalactics = $state(0);
-	let editImages = $state<PickedImage[]>([]);
-	let saving = $state(false);
-	let editError = $state<string | null>(null);
-	let editDone = $state<string | null>(null);
-
-	onMount(loadItems);
-
-	async function loadItems() {
-		loading = true;
-		listError = null;
-		try {
-			items = (await api.admin.items()).items;
-		} catch (e) {
-			listError = e instanceof Error ? e.message : 'Chargement impossible';
-		} finally {
-			loading = false;
-		}
+	function openPlayer(id: string) {
+		navigate('players', { user: id });
 	}
 
-	function slugify(value: string): string {
-		return value
-			.normalize('NFD')
-			.replace(/[\u0300-\u036f]/g, '')
-			.toLowerCase()
-			.replace(/[^a-z0-9]+/g, '-')
-			.replace(/^-+|-+$/g, '')
-			.slice(0, 40);
-	}
-
-	function readAsDataUrl(file: File): Promise<string> {
-		return new Promise((resolve, reject) => {
-			const reader = new FileReader();
-			reader.onload = () => resolve(String(reader.result));
-			reader.onerror = () => reject(new Error(`Lecture impossible : ${file.name}`));
-			reader.readAsDataURL(file);
-		});
-	}
-
-	// Files are sorted by name so that ship-1.png, ship-2.png… become f1, f2…
-	async function pickImages(files: FileList | null): Promise<PickedImage[]> {
-		const list = Array.from(files ?? []).sort((a, b) =>
-			a.name.localeCompare(b.name, undefined, { numeric: true })
-		);
-		if (list.length > MAX_FRAMES) throw new Error(`${MAX_FRAMES} images maximum`);
-		if (new Set(list.map((f) => f.type)).size > 1)
-			throw new Error('Toutes les images doivent avoir le même format');
-		for (const f of list) {
-			if (!ACCEPTED_TYPES.includes(f.type)) throw new Error(`${f.name} n'est ni un WebP ni un PNG`);
-			if (f.size > MAX_IMAGE_BYTES) throw new Error(`${f.name} dépasse 2 Mo`);
-		}
-		return Promise.all(
-			list.map(async (f) => {
-				const dataUrl = await readAsDataUrl(f);
-				return { name: f.name, dataUrl, base64: dataUrl.slice(dataUrl.indexOf(',') + 1) };
-			})
-		);
-	}
-
-	async function onNewImages(e: Event) {
-		createError = null;
-		try {
-			newImages = await pickImages((e.currentTarget as HTMLInputElement).files);
-		} catch (err) {
-			newImages = [];
-			createError = err instanceof Error ? err.message : 'Images invalides';
-		}
-	}
-
-	async function onEditImages(e: Event) {
-		editError = null;
-		editDone = null;
-		try {
-			editImages = await pickImages((e.currentTarget as HTMLInputElement).files);
-		} catch (err) {
-			editImages = [];
-			editError = err instanceof Error ? err.message : 'Images invalides';
-		}
-	}
-
-	function resetCreateForm() {
-		name = '';
-		sprite = '';
-		spriteTouched = false;
-		description = '';
-		price = 0;
-		priceGalactics = 0;
-		newImages = [];
-	}
-
-	async function createItem(e: SubmitEvent) {
-		e.preventDefault();
-		if (creating) return;
-		createError = null;
-		createdName = null;
-		if (newImages.length === 0) {
-			createError = 'Ajoute au moins une image';
-			return;
-		}
-		creating = true;
-		try {
-			const { item } = await api.admin.createItem({
-				name: name.trim(),
-				description: description.trim(),
-				price: price || 0,
-				priceGalactics: priceGalactics || 0,
-				type: createType,
-				bulletRole: kind === 'ship' ? undefined : kind,
-				sprite: effectiveSprite,
-				images: newImages.map((i) => i.base64)
-			});
-			items = [...items, item];
-			showTab(kind);
-			createdName = item.name;
-			resetCreateForm();
-			(e.target as HTMLFormElement).reset();
-		} catch (err) {
-			createError = err instanceof Error ? err.message : 'Création impossible';
-		} finally {
-			creating = false;
-		}
-	}
-
-	function showTab(tab: ItemTab) {
-		listTab = tab;
-		if (selected && !filterByTab([selected], tab).length) selected = null;
-	}
-
-	function select(item: Item) {
-		selected = item;
-		editName = item.name;
-		editDescription = item.description ?? '';
-		editPrice = item.price ?? 0;
-		editGalactics = item.priceGalactics ?? 0;
-		editImages = [];
-		editError = null;
-		editDone = null;
-	}
-
-	function replaceInList(updated: Item) {
-		items = items.map((i) => (i._id === updated._id ? updated : i));
-		select(updated);
-	}
-
-	async function saveDetails() {
-		if (!selected || saving) return;
-		const changes: ItemChanges = {};
-		if (editName.trim() !== selected.name) changes.name = editName.trim();
-		if (editDescription.trim() !== (selected.description ?? ''))
-			changes.description = editDescription.trim();
-		if ((editPrice || 0) !== (selected.price ?? 0)) changes.price = editPrice || 0;
-		if ((editGalactics || 0) !== (selected.priceGalactics ?? 0))
-			changes.priceGalactics = editGalactics || 0;
-		if (Object.keys(changes).length === 0) {
-			editDone = 'Rien à enregistrer';
-			return;
-		}
-		saving = true;
-		editError = null;
-		try {
-			const { item } = await api.admin.updateItem(selected._id, changes);
-			replaceInList(item);
-			editDone = 'Modifications enregistrées';
-		} catch (err) {
-			editError = err instanceof Error ? err.message : 'Enregistrement impossible';
-		} finally {
-			saving = false;
-		}
-	}
-
-	async function saveImages() {
-		if (!selected || saving || editImages.length === 0) return;
-		saving = true;
-		editError = null;
-		try {
-			const { item } = await api.admin.replaceImages(
-				selected._id,
-				editImages.map((i) => i.base64)
-			);
-			replaceInList(item);
-			editDone = 'Images remplacées';
-		} catch (err) {
-			editError = err instanceof Error ? err.message : 'Envoi impossible';
-		} finally {
-			saving = false;
-		}
-	}
-
-	function kindLabel(item: Item): string {
-		if (item.type === 'ship') return 'Vaisseau';
-		return item.bulletRole === 'secondary' ? 'Tir secondaire' : 'Tir principal';
+	function selectPlayer(id: string | null) {
+		navigate('players', id ? { user: id } : {});
 	}
 </script>
 
@@ -248,211 +59,56 @@
 <main class="admin">
 	<header class="admin-header">
 		<a href="/lobby" class="back"><ArrowLeft size={16} /> Retour au lobby</a>
-		<h1>Boutique du hangar</h1>
-		<p class="subtitle">Ajoute ou modifie ce que les joueurs peuvent acheter.</p>
+		<h1>Administration</h1>
+		<p class="subtitle">
+			{isAdmin
+				? 'Joueurs, parties, chat, boutique : tout se gère ici.'
+				: 'Modération des joueurs, des parties et du chat.'}
+		</p>
 	</header>
 
-	{#if !isAdmin}
-		<p class="denied">Cette page est réservée aux administrateurs.</p>
+	{#if !isStaff}
+		<p class="denied">Cette page est réservée à l'équipe de modération.</p>
 	{:else}
-		<div class="layout">
-			<section class="panel">
-				<h2><Plus size={16} /> Nouvel item</h2>
-				<form onsubmit={createItem} class="form">
-					<div class="kind-picker" role="radiogroup" aria-label="Type d'item">
-						{#each ITEM_TABS as tab (tab.key)}
-							<button
-								type="button"
-								role="radio"
-								aria-checked={kind === tab.key}
-								class:active={kind === tab.key}
-								onclick={() => (kind = tab.key)}>{tab.label}</button
-							>
-						{/each}
-					</div>
+		<nav class="admin-tabs" aria-label="Sections">
+			{#each tabs as t (t.key)}
+				{@const Icon = t.icon}
+				<button
+					class:active={tab === t.key}
+					aria-current={tab === t.key ? 'page' : undefined}
+					onclick={() => navigate(t.key)}
+				>
+					<Icon size={15} />
+					{t.label}
+				</button>
+			{/each}
+		</nav>
 
-					<label>
-						<span>Nom</span>
-						<input bind:value={name} maxlength="40" required placeholder="Faucon noir" />
-					</label>
-
-					<label>
-						<span>Dossier des images</span>
-						<input
-							value={effectiveSprite}
-							oninput={(e) => {
-								spriteTouched = true;
-								sprite = slugify(e.currentTarget.value);
-							}}
-							maxlength="40"
-							required
-						/>
-						<small>
-							assets/{TYPE_FOLDER[createType]}/<strong>{effectiveSprite || '…'}</strong>/f1.webp
-						</small>
-					</label>
-
-					<label>
-						<span>Description</span>
-						<input bind:value={description} maxlength="200" placeholder="Vaisseau noir." />
-					</label>
-
-					<div class="row">
-						<label>
-							<span>Prix en crédits</span>
-							<input type="number" bind:value={price} min="0" max="1000000" step="1" required />
-						</label>
-						<label>
-							<span>Prix en Galactics</span>
-							<input type="number" bind:value={priceGalactics} min="0" max="10000" step="1" />
-						</label>
-					</div>
-					{#if price === 0 && priceGalactics === 0}
-						<p class="hint">Gratuit : il sera donné à tous les joueurs.</p>
-					{/if}
-
-					<label>
-						<span>Images (WebP ou PNG, une par étape d'animation)</span>
-						<input type="file" accept="image/webp,image/png" multiple onchange={onNewImages} />
-						<small>Les fichiers sont pris dans l'ordre de leur nom, {MAX_FRAMES} max.</small>
-					</label>
-
-					{#if newImages.length}
-						<div class="picked">
-							<ItemPreview urls={newImages.map((i) => i.dataUrl)} size={72} alt="aperçu" />
-							<ol>
-								{#each newImages as img, i (img.name)}
-									<li>f{i + 1} ← {img.name}</li>
-								{/each}
-							</ol>
-						</div>
-					{/if}
-
-					{#if createError}<p class="error" role="alert">{createError}</p>{/if}
-					{#if createdName}<p class="success">{createdName} est en vente dans le hangar.</p>{/if}
-
-					<button class="btn btn-primary" type="submit" disabled={creating}>
-						{creating ? 'Création…' : "Créer l'item"}
-					</button>
-				</form>
-			</section>
-
-			<section class="panel">
-				<h2>Items existants</h2>
-				<div class="tabs">
-					{#each ITEM_TABS as tab (tab.key)}
-						<button class:active={listTab === tab.key} onclick={() => showTab(tab.key)}>
-							{tab.label}
-							<span class="count">{filterByTab(items, tab.key).length}</span>
-						</button>
-					{/each}
-				</div>
-
-				{#if loading}
-					<p class="muted">Chargement…</p>
-				{:else if listError}
-					<p class="error" role="alert">{listError}</p>
-				{:else if listed.length === 0}
-					<p class="muted">Aucun item dans cette catégorie.</p>
-				{:else}
-					<ul class="item-list">
-						{#each listed as item (item._id)}
-							<li>
-								<button
-									class="item-row"
-									class:selected={selected?._id === item._id}
-									onclick={() => select(item)}
-								>
-									<ItemPreview urls={itemFrameUrls(item)} size={44} alt={item.name} />
-									<span class="item-main">
-										<span class="item-name">{item.name}</span>
-										<span class="item-meta"
-											>{item.sprite} · {item.frames ?? 0} image{(item.frames ?? 0) > 1
-												? 's'
-												: ''}</span
-										>
-									</span>
-									<span class="item-price">
-										{#if !item.price && !item.priceGalactics}
-											Gratuit
-										{:else}
-											{#if item.price}⭐ {item.price}{/if}
-											{#if item.priceGalactics}<span class="gem"
-													><Gem size={11} />{item.priceGalactics}</span
-												>{/if}
-										{/if}
-									</span>
-								</button>
-							</li>
-						{/each}
-					</ul>
-				{/if}
-
-				{#if selected}
-					<div class="editor">
-						<div class="editor-head">
-							<ItemPreview urls={itemFrameUrls(selected)} size={64} alt={selected.name} />
-							<div>
-								<h3>{selected.name}</h3>
-								<p class="muted">
-									{kindLabel(selected)} · assets/{TYPE_FOLDER[selected.type]}/{selected.sprite}/
-								</p>
-							</div>
-						</div>
-
-						<label>
-							<span>Nom</span>
-							<input bind:value={editName} maxlength="40" />
-						</label>
-						<label>
-							<span>Description</span>
-							<input bind:value={editDescription} maxlength="200" />
-						</label>
-						<div class="row">
-							<label>
-								<span>Prix en crédits</span>
-								<input type="number" bind:value={editPrice} min="0" max="1000000" step="1" />
-							</label>
-							<label>
-								<span>Prix en Galactics</span>
-								<input type="number" bind:value={editGalactics} min="0" max="10000" step="1" />
-							</label>
-						</div>
-						<button class="btn btn-secondary" onclick={saveDetails} disabled={saving}>
-							Enregistrer
-						</button>
-
-						<label class="replace">
-							<span>Remplacer les images</span>
-							<input type="file" accept="image/webp,image/png" multiple onchange={onEditImages} />
-						</label>
-						{#if editImages.length}
-							<div class="picked">
-								<ItemPreview urls={editImages.map((i) => i.dataUrl)} size={64} alt="aperçu" />
-								<button class="btn btn-secondary" onclick={saveImages} disabled={saving}>
-									Remplacer par ces {editImages.length} image{editImages.length > 1 ? 's' : ''}
-								</button>
-							</div>
-						{/if}
-
-						{#if editError}<p class="error" role="alert">{editError}</p>{/if}
-						{#if editDone}<p class="success">{editDone}</p>{/if}
-					</div>
-				{/if}
-			</section>
-		</div>
+		{#if tab === 'overview'}
+			<AdminOverview {isAdmin} onOpenPlayer={openPlayer} onNavigate={(t) => navigate(t)} />
+		{:else if tab === 'players'}
+			<AdminPlayers {isAdmin} selectedId={userId} onSelect={selectPlayer} />
+		{:else if tab === 'games'}
+			<AdminGames onOpenPlayer={openPlayer} />
+		{:else if tab === 'chat'}
+			<AdminChat />
+		{:else if tab === 'shop'}
+			<AdminShop />
+		{:else if tab === 'journal'}
+			<AdminJournal onOpenPlayer={openPlayer} />
+		{/if}
 	{/if}
 </main>
 
 <style>
 	.admin {
-		max-width: 1100px;
+		max-width: 1200px;
 		margin: 0 auto;
 		padding: 1.5rem 1.25rem 3rem;
 		font-family: 'Quantico', 'Segoe UI', system-ui, sans-serif;
 	}
 	.admin-header {
-		margin-bottom: 1.5rem;
+		margin-bottom: 1.25rem;
 	}
 	.back {
 		display: inline-flex;
@@ -479,198 +135,245 @@
 	.denied {
 		color: #ff8080;
 	}
-	.layout {
-		display: grid;
-		grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
-		gap: 1.25rem;
-		align-items: start;
+	.admin-tabs {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.4rem;
+		margin-bottom: 1.25rem;
+		padding-bottom: 0.85rem;
+		border-bottom: 1px solid rgba(77, 217, 255, 0.12);
 	}
-	@media (max-width: 860px) {
-		.layout {
-			grid-template-columns: 1fr;
-		}
+	.admin-tabs button {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		background: rgba(5, 8, 22, 0.85);
+		border: 1px solid rgba(77, 217, 255, 0.15);
+		border-radius: 9px;
+		color: #8090c0;
+		padding: 0.5rem 0.9rem;
+		font-size: 0.85rem;
+		font-family: inherit;
+		cursor: pointer;
 	}
-	.panel {
+	.admin-tabs button:hover {
+		color: #c0e8ff;
+		border-color: rgba(77, 217, 255, 0.4);
+	}
+	.admin-tabs button.active {
+		color: #c0e8ff;
+		border-color: #4dd9ff;
+		box-shadow: 0 0 12px rgba(77, 217, 255, 0.25);
+	}
+
+	.admin :global(.a-panel) {
 		background: rgba(10, 14, 36, 0.85);
 		border: 1px solid rgba(77, 217, 255, 0.15);
 		border-radius: 14px;
-		padding: 1.25rem;
+		padding: 1.15rem;
+		min-width: 0;
 	}
-	h2 {
+	.admin :global(.a-panel h2) {
 		display: flex;
 		align-items: center;
-		gap: 0.4rem;
+		gap: 0.45rem;
 		font-size: 1rem;
 		color: #c0c8ff;
-		margin-bottom: 1rem;
+		margin-bottom: 0.9rem;
 	}
-	h3 {
-		font-size: 1rem;
-		color: #c0e8ff;
+	.admin :global(.a-panel h3) {
+		font-size: 0.85rem;
+		color: #8fa0d8;
+		text-transform: uppercase;
+		letter-spacing: 0.6px;
+		margin-bottom: 0.6rem;
 	}
-	.form,
-	.editor {
+	.admin :global(.a-grid) {
+		display: grid;
+		gap: 1.1rem;
+		align-items: start;
+	}
+	.admin :global(.a-toolbar) {
 		display: flex;
-		flex-direction: column;
-		gap: 0.85rem;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+		align-items: center;
+		margin-bottom: 0.9rem;
 	}
-	label {
+	.admin :global(.a-toolbar input),
+	.admin :global(.a-toolbar select) {
+		flex: 1 1 180px;
+		min-width: 0;
+	}
+	.admin :global(select),
+	.admin :global(textarea) {
+		background: rgba(5, 8, 22, 0.9);
+		border: 1px solid rgba(77, 217, 255, 0.2);
+		border-radius: 8px;
+		color: #c0c8ff;
+		padding: 0.55rem 0.7rem;
+		font-family: inherit;
+		font-size: 0.85rem;
+	}
+	.admin :global(textarea) {
+		width: 100%;
+		resize: vertical;
+	}
+	.admin :global(.a-field) {
 		display: flex;
 		flex-direction: column;
 		gap: 0.3rem;
 	}
-	label > span {
-		font-size: 0.78rem;
-		color: #8090c0;
-	}
-	small,
-	.hint {
-		font-size: 0.72rem;
-		color: #5a6290;
-	}
-	small strong {
-		color: #4dd9ff;
-		font-weight: 600;
-	}
-	input[type='file'] {
-		padding: 0.45rem;
-		font-size: 0.82rem;
-	}
-	.row {
-		display: grid;
-		grid-template-columns: 1fr 1fr;
-		gap: 0.75rem;
-	}
-	.kind-picker,
-	.tabs {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.4rem;
-	}
-	.kind-picker button,
-	.tabs button {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.35rem;
-		background: rgba(5, 8, 22, 0.85);
-		border: 1px solid rgba(77, 217, 255, 0.18);
-		border-radius: 8px;
-		color: #8090c0;
-		padding: 0.4rem 0.75rem;
-		font-size: 0.8rem;
-		cursor: pointer;
-		font-family: inherit;
-	}
-	.kind-picker button.active,
-	.tabs button.active {
-		border-color: #4dd9ff;
-		color: #c0e8ff;
-		box-shadow: 0 0 10px rgba(77, 217, 255, 0.25);
-	}
-	.count {
-		font-size: 0.7rem;
-		color: #5a6290;
-	}
-	.picked {
-		display: flex;
-		align-items: center;
-		gap: 1rem;
-		background: rgba(5, 5, 25, 0.8);
-		border-radius: 10px;
-		padding: 0.6rem 0.8rem;
-	}
-	.picked ol {
-		list-style: none;
+	.admin :global(.a-field > span) {
 		font-size: 0.75rem;
 		color: #8090c0;
-		display: flex;
-		flex-direction: column;
-		gap: 0.15rem;
 	}
-	.error {
+	.admin :global(.a-seg) {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.35rem;
+	}
+	.admin :global(.a-seg button) {
+		background: rgba(5, 8, 22, 0.85);
+		border: 1px solid rgba(77, 217, 255, 0.15);
+		border-radius: 999px;
+		color: #8090c0;
+		padding: 0.3rem 0.7rem;
+		font-size: 0.76rem;
+		font-family: inherit;
+		cursor: pointer;
+	}
+	.admin :global(.a-seg button.active) {
+		border-color: #4dd9ff;
+		color: #c0e8ff;
+	}
+	.admin :global(.a-table-wrap) {
+		overflow-x: auto;
+	}
+	.admin :global(.a-table) {
+		width: 100%;
+		border-collapse: collapse;
+		font-size: 0.82rem;
+	}
+	.admin :global(.a-table th) {
+		text-align: left;
+		color: #5a6290;
+		font-weight: 600;
+		font-size: 0.72rem;
+		text-transform: uppercase;
+		letter-spacing: 0.5px;
+		padding: 0.45rem 0.6rem;
+		border-bottom: 1px solid rgba(77, 217, 255, 0.12);
+		white-space: nowrap;
+	}
+	.admin :global(.a-table td) {
+		padding: 0.5rem 0.6rem;
+		border-bottom: 1px solid rgba(77, 217, 255, 0.06);
+		color: #b0b8e8;
+		vertical-align: middle;
+	}
+	.admin :global(.a-table tr.clickable) {
+		cursor: pointer;
+	}
+	.admin :global(.a-table tr.clickable:hover td) {
+		background: rgba(77, 217, 255, 0.05);
+	}
+	.admin :global(.a-table tr.selected td) {
+		background: rgba(255, 204, 85, 0.08);
+	}
+	.admin :global(.a-num) {
+		text-align: right;
+		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
+	}
+	.admin :global(.a-link) {
+		background: none;
+		border: none;
+		padding: 0;
+		color: #8fd8ff;
+		font-family: inherit;
+		font-size: inherit;
+		cursor: pointer;
+		text-align: left;
+	}
+	.admin :global(.a-link:hover) {
+		text-decoration: underline;
+	}
+	.admin :global(.a-tag) {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
+		font-size: 0.68rem;
+		font-weight: 700;
+		padding: 0.12rem 0.45rem;
+		border-radius: 999px;
+		border: 1px solid currentColor;
+		white-space: nowrap;
+		line-height: 1.4;
+	}
+	.admin :global(.a-tag.danger) {
+		color: #ff8a8a;
+	}
+	.admin :global(.a-tag.warn) {
+		color: #ffcc55;
+	}
+	.admin :global(.a-tag.ok) {
+		color: #80e8a0;
+	}
+	.admin :global(.a-tag.info) {
+		color: #4dd9ff;
+	}
+	.admin :global(.a-tag.muted) {
+		color: #6870a0;
+	}
+	.admin :global(.a-tag.staff) {
+		color: #c9a0ff;
+	}
+	.admin :global(.a-dot) {
+		display: inline-block;
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: #3a4060;
+		flex-shrink: 0;
+	}
+	.admin :global(.a-dot.on) {
+		background: #50e890;
+		box-shadow: 0 0 6px rgba(80, 232, 144, 0.7);
+	}
+	.admin :global(.a-pager) {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.75rem;
+		margin-top: 0.8rem;
+		font-size: 0.78rem;
+		color: #6870a0;
+	}
+	.admin :global(.a-pager div) {
+		display: flex;
+		gap: 0.4rem;
+	}
+	.admin :global(.btn-sm) {
+		padding: 0.35rem 0.7rem;
+		font-size: 0.78rem;
+	}
+	.admin :global(.a-error) {
 		color: #ff8080;
 		font-size: 0.82rem;
 	}
-	.success {
+	.admin :global(.a-success) {
 		color: #80e880;
 		font-size: 0.82rem;
 	}
-	.muted {
+	.admin :global(.a-muted) {
 		color: #5a6290;
 		font-size: 0.82rem;
 	}
-	.tabs {
-		margin-bottom: 0.85rem;
-	}
-	.item-list {
-		list-style: none;
-		display: flex;
-		flex-direction: column;
-		gap: 0.4rem;
-	}
-	.item-row {
-		width: 100%;
-		display: flex;
-		align-items: center;
-		gap: 0.8rem;
-		background: rgba(5, 8, 22, 0.85);
-		border: 1px solid rgba(77, 217, 255, 0.12);
-		border-radius: 10px;
-		padding: 0.45rem 0.7rem;
-		cursor: pointer;
-		text-align: left;
-		color: inherit;
-		font-family: inherit;
-	}
-	.item-row:hover {
-		border-color: rgba(77, 217, 255, 0.4);
-	}
-	.item-row.selected {
-		border-color: #ffcc55;
-		box-shadow: 0 0 10px rgba(255, 204, 85, 0.25);
-	}
-	.item-main {
-		flex: 1;
-		min-width: 0;
-		display: flex;
-		flex-direction: column;
-	}
-	.item-name {
-		color: #c0c8ff;
-		font-size: 0.9rem;
-	}
-	.item-meta {
+	.admin :global(.a-empty) {
 		color: #5a6290;
-		font-size: 0.72rem;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.item-price {
-		display: flex;
-		gap: 0.4rem;
-		font-size: 0.78rem;
-		font-weight: 700;
-		color: #ffcc55;
-		white-space: nowrap;
-	}
-	.gem {
-		display: inline-flex;
-		align-items: center;
-		gap: 2px;
-		color: #c9a0ff;
-	}
-	.editor {
-		margin-top: 1.25rem;
-		padding-top: 1.25rem;
-		border-top: 1px solid rgba(77, 217, 255, 0.12);
-	}
-	.editor-head {
-		display: flex;
-		align-items: center;
-		gap: 0.9rem;
-	}
-	.replace {
-		margin-top: 0.5rem;
+		font-size: 0.85rem;
+		padding: 1.25rem 0;
+		text-align: center;
 	}
 </style>

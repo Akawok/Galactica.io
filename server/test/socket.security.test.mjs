@@ -160,9 +160,11 @@ describe("anti-triche", () => {
 
 describe("chat", () => {
   test("normalise et tronque les messages", async () => {
-    const { socket } = await joinedSocket("cht");
+    const { socket, user } = await joinedSocket("cht");
     const received = [];
-    socket.on("chat:message", (m) => received.push(m.message));
+    socket.on("chat:message", (m) => {
+      if (m.username === user.username) received.push(m.message);
+    });
 
     socket.emit("chat:message", { message: "  bonjour\n\ntout   le monde  " });
     await sleep(900);
@@ -174,9 +176,11 @@ describe("chat", () => {
   });
 
   test("retire les caractères de contrôle et RTL", async () => {
-    const { socket } = await joinedSocket("cht");
+    const { socket, user } = await joinedSocket("cht");
     const received = [];
-    socket.on("chat:message", (m) => received.push(m.message));
+    socket.on("chat:message", (m) => {
+      if (m.username === user.username) received.push(m.message);
+    });
 
     socket.emit("chat:message", { message: "s​p​a​m" });
     await sleep(900);
@@ -188,9 +192,11 @@ describe("chat", () => {
   });
 
   test("limite le flood", async () => {
-    const { socket } = await joinedSocket("fld");
+    const { socket, user } = await joinedSocket("fld");
     const received = [];
-    socket.on("chat:message", (m) => received.push(m.message));
+    socket.on("chat:message", (m) => {
+      if (m.username === user.username) received.push(m.message);
+    });
 
     for (let i = 0; i < 30; i++) {
       socket.emit("chat:message", { message: `flood${i}` });

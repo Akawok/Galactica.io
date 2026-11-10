@@ -3,7 +3,7 @@
 	import { page } from '$app/stores';
 	import { isAuthenticated, auth, currentUser } from '$lib/stores/auth';
 	import { connectSocket, disconnectSocket } from '$lib/stores/socket';
-	import { addMessage } from '$lib/stores/chat';
+	import { addMessage, removeMessages } from '$lib/stores/chat';
 	import Rocket from '@lucide/svelte/icons/rocket';
 	import Gem from '@lucide/svelte/icons/gem';
 	import Wrench from '@lucide/svelte/icons/wrench';
@@ -44,6 +44,8 @@
 			if (!socket) return;
 			socket.off('chat:message');
 			socket.on('chat:message', addMessage);
+			socket.off('chat:removed');
+			socket.on('chat:removed', removeMessages);
 		});
 	});
 
@@ -66,7 +68,7 @@
 		<a href="/lobby" class="logo"><Rocket size={16} /> Galactica.io</a>
 		<div class="nav-center"></div>
 		<div class="nav-right">
-			{#if $currentUser?.role === 'admin'}
+			{#if $currentUser?.role === 'admin' || $currentUser?.role === 'moderator'}
 				<a href="/admin" class="admin-link" title="Administration"><Wrench size={15} /> Admin</a>
 			{/if}
 			{#if $currentUser}

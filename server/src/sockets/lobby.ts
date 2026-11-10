@@ -1,4 +1,5 @@
 import { randomBytes } from "crypto";
+import mongoose from "mongoose";
 import type { Server, Socket } from "socket.io";
 import type { RoomState } from "../services/game.service.js";
 import { loadPlayerStats } from "../services/game.service.js";
@@ -242,7 +243,9 @@ export function announceLevelChange(
   if (grade.label === getGrade(oldLevel).label) return;
   const now = Date.now();
   const message = `${username} passe ${grade.label} !`;
+  const _id = new mongoose.Types.ObjectId();
   ChatMessage.create({
+    _id,
     username,
     message,
     timestamp: new Date(now),
@@ -250,6 +253,7 @@ export function announceLevelChange(
     system: true,
   }).catch(() => {});
   io.emit("chat:message", {
+    id: String(_id),
     username,
     message,
     timestamp: now,
@@ -312,6 +316,7 @@ export function registerLobbySocket(io: Server, socket: Socket) {
       roundStartTime: 0,
       ownerUserId: player.userId,
       playerUserIds: new Set([player.userId]),
+      createdAt: Date.now(),
     };
 
     room.waitingPlayers = [socket.id];
@@ -493,19 +498,137 @@ export function registerLobbySocket(io: Server, socket: Socket) {
     }
     if (account?.level) player.level = account.level;
 
+    // The id is chosen here so moderators can delete the message from every open chat
+    const _id = new mongoose.Types.ObjectId();
     ChatMessage.create({
+      _id,
       username: player.username,
       message: sanitized,
       timestamp: new Date(now),
       level: player.level,
     }).catch(() => {});
     io.emit("chat:message", {
+      id: String(_id),
       username: player.username,
       message: sanitized,
       timestamp: now,
       level: player.level,
     });
   });
+}
+
+export interface OnlinePlayerView {
+  userId: string;
+  username: string;
+  level: number;
+  status: ConnectedPlayer["status"];
+  roomId: string | null;
+}
+
+export function listOnlinePlayers(): OnlinePlayerView[] {
+  return Array.from(connectedPlayers.values()).map((p) => ({
+    userId: p.userId,
+    username: p.username,
+    level: p.level,
+    status: p.status,
+    roomId:
+      p.currentRoomId && rooms.has(p.currentRoomId) ? p.currentRoomId : null,
+  }));
+}
+
+export function findOnlinePlayer(userId: string): OnlinePlayerView | null {
+  return listOnlinePlayers().find((p) => p.userId === userId) ?? null;
+}
+
+export function listLiveRooms() {
+  return Array.from(rooms.values()).map((r) => {
+    const players =
+      r.status === "waiting"
+        ? (r.waitingPlayers ?? [])
+            .map((id) => connectedPlayers.get(id))
+            .filter((p): p is ConnectedPlayer => !!p)
+            .map((p) => ({
+              userId: p.userId,
+              username: p.username,
+              level: p.level,
+              score: 0,
+            }))
+        : Array.from(r.players.values()).map((p) => ({
+            userId: p.userId,
+            username: p.username,
+            level: p.level,
+            score: r.scores.get(p.id) ?? 0,
+          }));
+    return {
+      roomId: r.roomId,
+      status: r.status,
+      players,
+      spectatorCount: r.spectators.size,
+      createdAt: r.createdAt ?? null,
+    };
+  });
+}
+
+export type CloseRoomResult = "closed" | "not-found" | "ending";
+
+// Nobody wins and nothing is saved: no rewards, no desertion penalty
+export function closeRoomByAdmin(
+  io: Server,
+  roomId: string,
+  reason: string,
+): CloseRoomResult {
+  const room = rooms.get(roomId);
+  if (!room) return "not-found";
+  // Rewards are already being written, cutting now would leave a half-saved match
+  if (room.status === "matchEnd") return "ending";
+
+  if (room.intervalId) clearInterval(room.intervalId);
+  room.status = "matchEnd";
+  cleanupRoomInputs(io, room);
+  rooms.delete(roomId);
+
+  io.to(roomId).emit("game:closed", { roomId, reason });
+
+  const members = new Set([
+    ...(room.waitingPlayers ?? []),
+    ...room.players.keys(),
+    ...room.spectators,
+  ]);
+  for (const socketId of members) {
+    const p = connectedPlayers.get(socketId);
+    if (p && p.currentRoomId === roomId) {
+      p.status = "idle";
+      p.currentRoomId = undefined;
+    }
+    io.sockets.sockets.get(socketId)?.leave(roomId);
+  }
+  broadcastLobbyState(io);
+  return "closed";
+}
+
+export async function postAnnouncement(
+  io: Server,
+  author: string,
+  message: string,
+): Promise<string> {
+  const now = Date.now();
+  const doc = await ChatMessage.create({
+    username: author,
+    message,
+    timestamp: new Date(now),
+    system: true,
+    announcement: true,
+  });
+  const id = String(doc._id);
+  io.emit("chat:message", {
+    id,
+    username: author,
+    message,
+    timestamp: now,
+    system: true,
+    announcement: true,
+  });
+  return id;
 }
 
 function validRoomId(raw: unknown): string | null {

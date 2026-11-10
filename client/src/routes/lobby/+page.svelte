@@ -229,9 +229,13 @@
 		if (chatResult.status === 'fulfilled' && chatResult.value) {
 			for (const m of chatResult.value.messages)
 				addMessage({
+					id: m.id,
 					username: m.username,
 					message: m.message,
-					timestamp: new Date(m.timestamp).getTime()
+					timestamp: new Date(m.timestamp).getTime(),
+					level: m.level,
+					system: m.system,
+					announcement: m.announcement
 				});
 		}
 
@@ -580,7 +584,12 @@
 				<div class="chat-col-title"><MessageSquare size={14} /> Chat</div>
 				<div class="messages">
 					{#each $chatMessages as msg}
-						{#if msg.system}
+						{#if msg.announcement}
+							<div class="message announcement">
+								<span class="msg-time">{formatTime(msg.timestamp)}</span>
+								<span class="msg-text">📢 {msg.message}</span>
+							</div>
+						{:else if msg.system}
 							<div class="message promotion">
 								<span class="msg-time">{formatTime(msg.timestamp)}</span>
 								<span class="msg-text">🎖️ {msg.message}</span>
@@ -1465,6 +1474,17 @@
 		border-radius: 6px;
 		background: linear-gradient(90deg, rgba(255, 215, 0, 0.12), transparent);
 		border-left: 2px solid #ffd700;
+	}
+	.message.announcement {
+		align-items: center;
+		padding: 0.3rem 0.5rem;
+		border-radius: 6px;
+		background: linear-gradient(90deg, rgba(77, 217, 255, 0.14), transparent);
+		border-left: 2px solid #4dd9ff;
+	}
+	.message.announcement .msg-text {
+		color: #c0e8ff;
+		font-weight: 700;
 	}
 	.message.promotion .msg-text {
 		color: #ffe680;
