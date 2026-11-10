@@ -988,7 +988,6 @@
 	}
 	.logo-card {
 		flex-shrink: 0;
-		background: rgba(10, 14, 36, 0.78);
 		border-radius: 14px;
 		display: flex;
 		align-items: center;
