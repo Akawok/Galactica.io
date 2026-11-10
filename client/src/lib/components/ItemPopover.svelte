@@ -1,8 +1,12 @@
 <script lang="ts">
+	import { itemImageUrl } from '$lib/itemImages';
+
 	interface Item {
 		name: string;
 		sprite: string;
 		type: string;
+		frames?: number;
+		imageVersion?: number;
 		bulletRole?: string | null;
 		description?: string;
 	}
@@ -25,18 +29,6 @@
 		owned = true
 	}: Props = $props();
 
-	const ANIMATED_SPRITES = [
-		'spaceship-01',
-		'spaceship-02',
-		'spaceship-03',
-		'spaceship-04',
-		'spaceship-05',
-		'spaceship-06'
-	];
-	function spriteSrc(sprite: string) {
-		return ANIMATED_SPRITES.includes(sprite) ? `/assets/${sprite}-f1.png` : `/assets/${sprite}.png`;
-	}
-
 	const active = $derived(
 		item.type === 'ship'
 			? activeShip === item.sprite
@@ -49,7 +41,7 @@
 <div class="item-popover" style="left:{x}px; top:{y}px;">
 	<div class="popover-img">
 		<img
-			src={spriteSrc(item.sprite)}
+			src={itemImageUrl(item)}
 			alt={item.name}
 			onerror={(e: any) => (e.target.style.display = 'none')}
 		/>

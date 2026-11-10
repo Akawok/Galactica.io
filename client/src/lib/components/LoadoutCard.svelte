@@ -1,12 +1,14 @@
 <script lang="ts">
 	import Gem from '@lucide/svelte/icons/gem';
-	const ANIMATED_SPRITES = ['spaceship-01', 'spaceship-02', 'spaceship-03', 'spaceship-04', 'spaceship-05', 'spaceship-06'];
+	import { itemImageUrl } from '$lib/itemImages';
 
 	interface Item {
 		_id: string;
 		name: string;
 		sprite: string;
-		type?: string;
+		type: string;
+		frames?: number;
+		imageVersion?: number;
 		bulletRole?: string | null;
 		description?: string;
 		price?: number;
@@ -33,12 +35,6 @@
 		onhover,
 		onleave
 	}: Props = $props();
-
-	function spriteSrc(sprite: string) {
-		return ANIMATED_SPRITES.includes(sprite)
-			? `/assets/${sprite}-f1.png`
-			: `/assets/${sprite}.png`;
-	}
 </script>
 
 <button
@@ -52,7 +48,7 @@
 	onmouseleave={onleave}
 >
 	<img
-		src={spriteSrc(item.sprite)}
+		src={itemImageUrl(item)}
 		alt={item.name}
 		onerror={(e: any) => (e.target.style.display = 'none')}
 	/>

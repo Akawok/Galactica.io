@@ -2,7 +2,7 @@ import { get } from 'svelte/store';
 import { auth } from './stores/auth';
 import type { Attributes } from './shared/attributes';
 
-const BASE_URL = import.meta.env.VITE_SERVER_URL ?? 'http://localhost:3000';
+export const BASE_URL = import.meta.env.VITE_SERVER_URL ?? 'http://localhost:3000';
 
 function readCsrfCookie(): string | null {
 	if (typeof document === 'undefined') return null;
@@ -128,5 +128,36 @@ export const api = {
 	},
 	chat: {
 		history: () => request<{ messages: any[] }>('/chat/history')
+	},
+	admin: {
+		items: () => request<{ items: any[] }>('/admin/items'),
+		createItem: (item: NewItem) =>
+			request<{ item: any }>('/admin/items', { method: 'POST', body: JSON.stringify(item) }),
+		updateItem: (itemId: string, changes: ItemChanges) =>
+			request<{ item: any }>(`/admin/items/${itemId}`, {
+				method: 'PATCH',
+				body: JSON.stringify(changes)
+			}),
+		replaceImages: (itemId: string, images: string[]) =>
+			request<{ item: any }>(`/admin/items/${itemId}/images`, {
+				method: 'POST',
+				body: JSON.stringify({ images })
+			})
 	}
 };
+
+export interface ItemChanges {
+	name?: string;
+	description?: string;
+	price?: number;
+	priceGalactics?: number;
+}
+
+export interface NewItem extends ItemChanges {
+	name: string;
+	price: number;
+	type: 'ship' | 'bullet';
+	bulletRole?: 'primary' | 'secondary';
+	sprite: string;
+	images?: string[];
+}

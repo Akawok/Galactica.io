@@ -70,6 +70,8 @@ export const config = {
   port: Number(process.env.PORT ?? 3000),
   clientUrl: process.env.CLIENT_URL ?? "http://localhost:5173",
   tokenTTL: process.env.TOKEN_TTL ?? "12h",
+  // Item images live on disk, one folder per item: <assetsDir>/spaceships/<sprite>/f1.png
+  assetsDir: resolve(process.env.ASSETS_DIR ?? resolve(__dirname, "../assets")),
   captureMails:
     process.env.NODE_ENV !== "production" &&
     process.env.CAPTURE_MAILS === "true",

@@ -2,6 +2,8 @@ import type { FastifyInstance } from "fastify";
 import mongoose from "mongoose";
 import { User, serializeUserFull } from "../models/User.js";
 import { Game } from "../models/Game.js";
+import type { IItem } from "../models/Item.js";
+import { withImages } from "../services/item-assets.service.js";
 
 export async function statsRoutes(app: FastifyInstance) {
   app.get(
@@ -15,7 +17,10 @@ export async function statsRoutes(app: FastifyInstance) {
         .select("-email -createdAt -tokenVersion -usernameCanonical")
         .populate("inventory");
       if (!user) return reply.code(404).send({ error: "Joueur non trouvé" });
-      return reply.send({ user: serializeUserFull(user) });
+      const inventory = await withImages(
+        (user.inventory as unknown as IItem[]).map((i) => i.toObject()),
+      );
+      return reply.send({ user: { ...serializeUserFull(user), inventory } });
     },
   );
 

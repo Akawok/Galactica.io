@@ -37,6 +37,7 @@
 	import DoorOpen from '@lucide/svelte/icons/door-open';
 	import X from '@lucide/svelte/icons/x';
 	import { getGrade } from '$lib/grades';
+	import { findItem, itemFrameUrls, pingPongOrder } from '$lib/itemImages';
 	import type { Socket } from 'socket.io-client';
 
 	interface Player {
@@ -57,6 +58,8 @@
 		type: string;
 		bulletRole?: string | null;
 		sprite: string;
+		frames?: number;
+		imageVersion?: number;
 		price?: number;
 		priceGalactics?: number;
 		description?: string;
@@ -96,18 +99,18 @@
 			return (b.level ?? 1) - (a.level ?? 1);
 		})
 	);
-	const ANIMATED_SPRITES = [
-		'spaceship-01',
-		'spaceship-02',
-		'spaceship-03',
-		'spaceship-04',
-		'spaceship-05',
-		'spaceship-06'
-	];
-	function shipPreviewSrc(sprite: string | undefined): string {
-		const s = sprite ?? 'spaceship-01';
-		return ANIMATED_SPRITES.includes(s) ? `/assets/${s}-f1.png` : `/assets/${s}.png`;
-	}
+	const activeShipItem = $derived(findItem(allItems, 'ship', $currentUser?.activeShip));
+	let previewShip = $state<InventoryItem | null>(null);
+	const displayedShip = $derived(previewShip ?? activeShipItem);
+	const shipFrames = $derived(displayedShip ? itemFrameUrls(displayedShip) : []);
+	const shipSequence = $derived(pingPongOrder(shipFrames.length));
+	let shipStep = $state(0);
+	const shipFrame = $derived(shipSequence[shipStep % shipSequence.length] ?? 0);
+	$effect(() => {
+		if (shipSequence.length < 2) return;
+		const timer = setInterval(() => (shipStep = (shipStep + 1) % shipSequence.length), 110);
+		return () => clearInterval(timer);
+	});
 
 	function lbMedal(i: number) {
 		return i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}`;
@@ -428,6 +431,7 @@
 						{canAfford}
 						onbuy={buyItem}
 						onequip={equipItem}
+						onpreview={(item) => (previewShip = item as InventoryItem | null)}
 						onhover={showPopover}
 						onleave={hidePopover}
 					/>
@@ -514,12 +518,16 @@
 
 		<div class="hero-ship">
 			<div class="ship-display">
-				<img
-					src={shipPreviewSrc($currentUser?.activeShip)}
-					alt="vaisseau"
-					class="ship-img"
-					onerror={(e: any) => (e.target.style.display = 'none')}
-				/>
+				{#if previewShip}
+					<span class="ship-preview-tag">Aperçu · {previewShip.name}</span>
+				{/if}
+				{#if shipFrames.length}
+					<div class="ship-img" role="img" aria-label={displayedShip?.name ?? 'vaisseau'}>
+						{#each shipFrames as url, i (url)}
+							<img src={url} alt="" class:visible={i === shipFrame} />
+						{/each}
+					</div>
+				{/if}
 				<div class="ship-podium">
 					<div class="podium-ring"></div>
 					<div class="podium-ring podium-ring-2"></div>
@@ -1147,13 +1155,39 @@
 	.ship-img {
 		width: 280px;
 		height: 280px;
-		object-fit: contain;
-		image-rendering: pixelated;
 		filter: drop-shadow(0 0 30px rgba(77, 217, 255, 0.55))
 			drop-shadow(0 0 60px rgba(123, 63, 245, 0.35));
 		position: relative;
 		z-index: 2;
 		animation: shipFloat 4s ease-in-out infinite;
+	}
+	.ship-preview-tag {
+		position: absolute;
+		top: 12px;
+		left: 50%;
+		transform: translateX(-50%);
+		z-index: 3;
+		padding: 0.25rem 0.7rem;
+		border: 1px solid rgba(255, 204, 85, 0.45);
+		border-radius: 999px;
+		background: rgba(255, 204, 85, 0.08);
+		color: #ffcc55;
+		font-size: 0.75rem;
+		font-weight: 600;
+		letter-spacing: 0.5px;
+		white-space: nowrap;
+	}
+	.ship-img img {
+		position: absolute;
+		inset: 0;
+		width: 100%;
+		height: 100%;
+		object-fit: contain;
+		image-rendering: pixelated;
+		visibility: hidden;
+	}
+	.ship-img img.visible {
+		visibility: visible;
 	}
 	@keyframes shipFloat {
 		0%,

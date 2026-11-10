@@ -4,8 +4,12 @@ export interface Item {
 	type: 'ship' | 'bullet' | 'cosmetic';
 	bulletRole?: 'primary' | 'secondary' | null;
 	price: number;
+	priceGalactics?: number;
 	description: string;
 	sprite: string;
+	frames?: number;
+	imageVersion?: number;
+	imageExt?: 'webp' | 'png';
 }
 
 export type ItemTab = 'ship' | 'primary' | 'secondary';

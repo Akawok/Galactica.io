@@ -23,6 +23,8 @@ import {
 } from './physics';
 import { PERK_CONFIG } from '$lib/shared/attributes';
 import { getGrade } from '$lib/shared/grades';
+import { api } from '$lib/api';
+import { findItem, itemFrameUrls, type ItemImageRef } from '$lib/itemImages';
 import type { Socket } from 'socket.io-client';
 
 // Remote entities are rendered this far in the past so there are always two snapshots to blend
@@ -140,19 +142,6 @@ interface BulletVisual {
 	predictedHit: boolean;
 }
 
-const ANIMATED_SPRITES: Record<string, string[]> = {
-	'spaceship-01': ['spaceship-01-f1', 'spaceship-01-f2', 'spaceship-01-f3', 'spaceship-01-f4'],
-	'spaceship-02': ['spaceship-02-f1', 'spaceship-02-f2', 'spaceship-02-f3', 'spaceship-02-f4'],
-	'spaceship-03': ['spaceship-03-f1', 'spaceship-03-f2', 'spaceship-03-f3', 'spaceship-03-f4'],
-	'spaceship-04': ['spaceship-04-f1', 'spaceship-04-f2', 'spaceship-04-f3', 'spaceship-04-f4'],
-	'spaceship-05': ['spaceship-05-f1', 'spaceship-05-f2', 'spaceship-05-f3', 'spaceship-05-f4'],
-	'spaceship-06': ['spaceship-06-f1', 'spaceship-06-f2', 'spaceship-06-f3', 'spaceship-06-f4']
-};
-
-function isAnimated(spriteName: string): spriteName is keyof typeof ANIMATED_SPRITES {
-	return spriteName in ANIMATED_SPRITES;
-}
-
 function lerpAngle(a: number, b: number, k: number): number {
 	let d = b - a;
 	while (d > Math.PI) d -= Math.PI * 2;
@@ -178,6 +167,8 @@ export class GameEngine {
 	private app: Application;
 	private starfield!: Starfield;
 	private playerVisuals = new Map<string, PlayerVisual>();
+	private shipFrameUrls = new Map<string, string[]>();
+	private bulletImageUrls = new Map<string, string>();
 	private bulletVisuals = new Map<string, BulletVisual>();
 	private socket: Socket;
 	private myId: string;
@@ -471,7 +462,8 @@ export class GameEngine {
 	}
 
 	private createBulletGraphic(type: string, sprite: string, angle: number): Sprite | Graphics {
-		const texture = Assets.get(`/assets/${sprite}.png`);
+		const url = this.bulletImageUrls.get(sprite);
+		const texture = url ? Assets.get(url) : undefined;
 		const isSpecial = type === 'special';
 		let visual: Sprite | Graphics;
 		if (texture) {
@@ -525,33 +517,42 @@ export class GameEngine {
 		}
 		if (payload.t !== undefined) this.updateClock(payload.t);
 
+		const newPlayers = payload.players.filter((p) => !this.playerVisuals.has(p.id));
+		if (newPlayers.length === 0) return;
+
+		// The catalog gives each sprite's frame count, and items can be added at any time
+		const catalog: ItemImageRef[] = await api.shop
+			.items()
+			.then((r) => r.items)
+			.catch(() => []);
+		const imageOf = (type: string, sprite: string) =>
+			itemFrameUrls(findItem(catalog, type, sprite) ?? { type, sprite });
+
 		const spritesToLoad = new Set<string>();
-		for (const p of payload.players) {
-			if (isAnimated(p.sprite)) {
-				for (const frame of ANIMATED_SPRITES[p.sprite]) {
-					spritesToLoad.add(`/assets/${frame}.png`);
-				}
-			} else {
-				spritesToLoad.add(`/assets/${p.sprite}.png`);
+		for (const p of newPlayers) {
+			const frames = imageOf('ship', p.sprite);
+			this.shipFrameUrls.set(p.sprite, frames);
+			frames.forEach((url) => spritesToLoad.add(url));
+			for (const bullet of [p.bulletSprite, p.bulletSpriteSecondary]) {
+				const [url] = imageOf('bullet', bullet);
+				if (!url) continue;
+				this.bulletImageUrls.set(bullet, url);
+				spritesToLoad.add(url);
 			}
-			spritesToLoad.add(`/assets/${p.bulletSprite}.png`);
-			spritesToLoad.add(`/assets/${p.bulletSpriteSecondary}.png`);
 		}
 
 		await Promise.all(Array.from(spritesToLoad).map((url) => Assets.load(url).catch(() => null)));
 
-		for (const p of payload.players) {
+		for (const p of newPlayers) {
 			if (this.playerVisuals.has(p.id)) continue;
 			this.createPlayerVisual(p);
 		}
 	}
 
 	private createShipSprite(spriteName: string, playerId: string): Sprite | AnimatedSprite {
-		if (isAnimated(spriteName)) {
-			const frames = ANIMATED_SPRITES[spriteName].map((f) => {
-				const tex = Assets.get(`/assets/${f}.png`);
-				return tex ?? Texture.WHITE;
-			});
+		const urls = this.shipFrameUrls.get(spriteName) ?? [];
+		if (urls.length > 1) {
+			const frames = urls.map((url) => Assets.get(url) ?? Texture.WHITE);
 			const anim = new AnimatedSprite(frames);
 			anim.anchor.set(0.5);
 			anim.width = 64;
@@ -563,7 +564,7 @@ export class GameEngine {
 			return anim;
 		}
 
-		const texture = Assets.get(`/assets/${spriteName}.png`);
+		const texture = urls[0] ? Assets.get(urls[0]) : undefined;
 		const spr = new Sprite(texture ?? Texture.WHITE);
 		spr.anchor.set(0.5);
 		spr.width = 64;
@@ -1013,7 +1014,7 @@ export class GameEngine {
 				moving = v.isMoving;
 			}
 
-			if (!isAnimated(v.state.sprite) && moving) {
+			if (!(v.sprite instanceof AnimatedSprite) && moving) {
 				v.thrustAcc += dt;
 				while (v.thrustAcc >= 1) {
 					v.thrustAcc -= 1;

@@ -1,11 +1,12 @@
 import type { FastifyInstance } from "fastify";
-import { Item } from "../models/Item.js";
+import { Item, type IItem } from "../models/Item.js";
 import { User } from "../models/User.js";
+import { withImages } from "../services/item-assets.service.js";
 
 export async function shopRoutes(app: FastifyInstance) {
   app.get("/shop/items", async (_req, reply) => {
     const items = await Item.find().lean();
-    return reply.send({ items });
+    return reply.send({ items: await withImages(items) });
   });
 
   app.get(
@@ -19,11 +20,11 @@ export async function shopRoutes(app: FastifyInstance) {
         .select(
           "inventory activeShip activeBullet activeBulletSecondary points",
         )
-        .populate("inventory");
+        .populate<{ inventory: IItem[] }>("inventory");
       if (!user)
         return reply.code(404).send({ error: "Utilisateur non trouvé" });
       return reply.send({
-        inventory: user.inventory,
+        inventory: await withImages(user.inventory.map((i) => i.toObject())),
         activeShip: user.activeShip,
         activeBullet: user.activeBullet,
         activeBulletSecondary: user.activeBulletSecondary ?? "bullet1",

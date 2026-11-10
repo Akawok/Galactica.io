@@ -27,6 +27,8 @@
 		canAfford?: (item: Item) => boolean;
 		onbuy?: (item: Item) => Promise<boolean>;
 		onequip: (item: Item) => void;
+		// Called with the item for sale the player is looking at, null when none
+		onpreview?: (item: Item | null) => void;
 		onhover: (e: MouseEvent, item: Item) => void;
 		onleave: () => void;
 	}
@@ -43,11 +45,17 @@
 		canAfford = () => true,
 		onbuy,
 		onequip,
+		onpreview,
 		onhover,
 		onleave
 	}: Props = $props();
 
 	let pending = $state<Item | null>(null);
+
+	$effect(() => {
+		onpreview?.(pending);
+		return () => onpreview?.(null);
+	});
 
 	async function confirmBuy() {
 		if (!pending || !onbuy) return;
@@ -73,7 +81,10 @@
 				{item}
 				active={activeSprite === item.sprite}
 				loading={loadingId === item._id}
-				onequip={() => onequip(item)}
+				onequip={() => {
+					pending = null;
+					onequip(item);
+				}}
 				onhover={(e) => onhover(e, item)}
 				{onleave}
 			/>

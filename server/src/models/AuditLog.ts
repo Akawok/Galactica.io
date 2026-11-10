@@ -5,7 +5,9 @@ export type AuditAction =
   | "unban"
   | "mute"
   | "role-change"
-  | "chat-purge";
+  | "chat-purge"
+  | "item-create"
+  | "item-update";
 
 export interface IAuditLog extends Document {
   action: AuditAction;
@@ -21,7 +23,15 @@ export interface IAuditLog extends Document {
 const AuditLogSchema = new Schema<IAuditLog>({
   action: {
     type: String,
-    enum: ["ban", "unban", "mute", "role-change", "chat-purge"],
+    enum: [
+      "ban",
+      "unban",
+      "mute",
+      "role-change",
+      "chat-purge",
+      "item-create",
+      "item-update",
+    ],
     required: true,
   },
   actorId: { type: Schema.Types.ObjectId, ref: "User", required: true },

@@ -14,6 +14,8 @@ import { attributesRoutes } from "./routes/attributes.js";
 import { leaderboardRoutes } from "./routes/leaderboard.js";
 import { chatRoutes } from "./routes/chat.js";
 import { adminRoutes } from "./routes/admin.js";
+import { adminItemsRoutes } from "./routes/admin-items.js";
+import { assetsRoutes } from "./routes/assets.js";
 import { registerLobbySocket } from "./sockets/lobby.js";
 import { bindIO } from "./sockets/registry.js";
 import {
@@ -163,6 +165,8 @@ await app.register(attributesRoutes);
 await app.register(leaderboardRoutes);
 await app.register(chatRoutes);
 await app.register(adminRoutes);
+await app.register(adminItemsRoutes);
+await app.register(assetsRoutes);
 
 app.get("/health", async () => ({ status: "ok" }));
 

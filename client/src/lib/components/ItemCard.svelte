@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import type { Item } from '$lib/itemFilter';
+	import { itemImageUrl } from '$lib/itemImages';
 
 	interface Props {
 		item: Item;
@@ -15,7 +16,7 @@
 <div class="card" class:equipped={highlight}>
 	<div class="card-img">
 		<img
-			src={`/assets/${item.sprite}.png`}
+			src={itemImageUrl(item)}
 			alt={item.name}
 			onerror={(e: any) => (e.target.style.display = 'none')}
 		/>

@@ -6,6 +6,7 @@
 	import { addMessage } from '$lib/stores/chat';
 	import Rocket from '@lucide/svelte/icons/rocket';
 	import Gem from '@lucide/svelte/icons/gem';
+	import Wrench from '@lucide/svelte/icons/wrench';
 	import { getGrade } from '$lib/grades';
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api';
@@ -65,6 +66,9 @@
 		<a href="/lobby" class="logo"><Rocket size={16} /> Galactica.io</a>
 		<div class="nav-center"></div>
 		<div class="nav-right">
+			{#if $currentUser?.role === 'admin'}
+				<a href="/admin" class="admin-link" title="Administration"><Wrench size={15} /> Admin</a>
+			{/if}
 			{#if $currentUser}
 				{@const grade = getGrade($currentUser.level ?? 1)}
 				<div class="nav-profile">
@@ -271,6 +275,23 @@
 	}
 	.nav-credit-sep {
 		color: rgba(255, 215, 0, 0.3);
+	}
+
+	.admin-link {
+		display: flex;
+		align-items: center;
+		gap: 0.3rem;
+		font-size: 0.8rem;
+		font-weight: 600;
+		color: #8090c0;
+		text-decoration: none;
+		border: 1px solid rgba(77, 217, 255, 0.2);
+		border-radius: 8px;
+		padding: 0.3rem 0.6rem;
+	}
+	.admin-link:hover {
+		color: #4dd9ff;
+		border-color: rgba(77, 217, 255, 0.5);
 	}
 
 	.logout-btn {
