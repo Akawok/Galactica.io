@@ -3,7 +3,11 @@ import { User } from "../models/User.js";
 import { Game } from "../models/Game.js";
 import { GAME_CONFIG, applyXP } from "./game.service.js";
 
-export type RewardNote = "limit" | "grey" | "upset";
+export type RewardNote =
+  | { kind: "repeat"; matchNumber: number; percent: number }
+  | { kind: "grey"; percent: number }
+  | { kind: "upset"; bonusPercent: number }
+  | { kind: "noFight"; self: boolean };
 
 export interface MatchResult {
   points: number;
@@ -14,10 +18,44 @@ export interface MatchResult {
   leveledUp: boolean;
   galactics: number;
   galacticsGained: number;
-  rewardNote?: RewardNote;
+  rewardNotes: RewardNote[];
 }
 
-const DAY_MS = 24 * 60 * 60 * 1000;
+// Offset (ms) between wall-clock time in timeZone and UTC at the given instant
+function zoneOffset(at: number, timeZone: string): number {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    })
+      .formatToParts(new Date(at))
+      .map((x) => [x.type, Number(x.value)]),
+  );
+  const wall = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second);
+  return wall - Math.floor(at / 1000) * 1000;
+}
+
+// Last midnight in timeZone, as a UTC instant. The offset is re-read at the candidate
+// midnight so days where the clocks change (DST) still land on 00:00 local time
+export function startOfDay(
+  now = Date.now(),
+  timeZone = GAME_CONFIG.DAILY_RESET_TIMEZONE,
+): Date {
+  const local = new Date(now + zoneOffset(now, timeZone));
+  const midnightWall = Date.UTC(
+    local.getUTCFullYear(),
+    local.getUTCMonth(),
+    local.getUTCDate(),
+  );
+  const guess = midnightWall - zoneOffset(now, timeZone);
+  return new Date(midnightWall - zoneOffset(guess, timeZone));
+}
 
 export function greyMultiplier(
   winnerLevel: number,
@@ -42,19 +80,34 @@ export function upsetXpBonus(winnerLevel: number, loserLevel: number): number {
   );
 }
 
+// matchNumber is 1 for the first win of the day over this opponent
+export function repeatMultiplier(matchNumber: number): number {
+  const extra = matchNumber - GAME_CONFIG.FULL_REWARD_MATCHES_PER_OPPONENT;
+  if (extra <= 0) return 1;
+  return Math.max(
+    GAME_CONFIG.REPEAT_REWARD_FLOOR,
+    1 - extra * GAME_CONFIG.REPEAT_REWARD_STEP,
+  );
+}
+
+const toPercent = (m: number) => Math.round(m * 100);
+
+// Only wins of this winner over this loser count, so a player who keeps losing to someone
+// still earns full rewards the first times they finally win.
 // Must run before the current match is saved, otherwise it counts itself
-async function rewardedMatchesToday(a: string, b: string): Promise<number> {
+async function winsToday(winnerId: string, loserId: string): Promise<number> {
+  const winner = new mongoose.Types.ObjectId(winnerId);
   return Game.countDocuments({
-    "players.userId": {
-      $all: [new mongoose.Types.ObjectId(a), new mongoose.Types.ObjectId(b)],
-    },
-    endedAt: { $gte: new Date(Date.now() - DAY_MS) },
+    "players.userId": { $all: [winner, new mongoose.Types.ObjectId(loserId)] },
+    winner,
+    endedAt: { $gte: startOfDay() },
   });
 }
 
 export async function recordMatchResult(opts: {
   winner: { socketId: string; userId: string };
   loser?: { socketId: string; userId: string };
+  loserFought: boolean;
 }): Promise<Map<string, MatchResult>> {
   const results = new Map<string, MatchResult>();
   const winnerValid = mongoose.Types.ObjectId.isValid(opts.winner.userId);
@@ -64,24 +117,37 @@ export async function recordMatchResult(opts: {
   let winnerMultiplier = 1;
   let winnerXpBonus = 0;
   let loserMultiplier = 1;
-  let winnerNote: RewardNote | undefined;
-  let loserNote: RewardNote | undefined;
+  const winnerNotes: RewardNote[] = [];
+  const loserNotes: RewardNote[] = [];
 
-  if (winnerValid && loserValid) {
+  if (!opts.loserFought) {
+    winnerMultiplier = loserMultiplier = 0;
+    winnerNotes.push({ kind: "noFight", self: false });
+    loserNotes.push({ kind: "noFight", self: true });
+  } else if (winnerValid && loserValid) {
     const [count, w, l] = await Promise.all([
-      rewardedMatchesToday(opts.winner.userId, opts.loser!.userId),
+      winsToday(opts.winner.userId, opts.loser!.userId),
       User.findById(opts.winner.userId).select("level").lean(),
       User.findById(opts.loser!.userId).select("level").lean(),
     ]);
-    if (count >= GAME_CONFIG.REWARDED_MATCHES_PER_OPPONENT) {
-      winnerMultiplier = loserMultiplier = 0;
-      winnerNote = loserNote = "limit";
-    } else {
-      winnerMultiplier = greyMultiplier(w?.level ?? 1, l?.level ?? 1);
-      winnerXpBonus = upsetXpBonus(w?.level ?? 1, l?.level ?? 1);
-      if (winnerMultiplier < 1) winnerNote = "grey";
-      else if (winnerXpBonus > 0) winnerNote = "upset";
+    const matchNumber = count + 1;
+    const repeat = repeatMultiplier(matchNumber);
+    if (repeat < 1) {
+      const note: RewardNote = {
+        kind: "repeat",
+        matchNumber,
+        percent: toPercent(repeat),
+      };
+      winnerNotes.push(note);
+      loserNotes.push(note);
     }
+    const grey = greyMultiplier(w?.level ?? 1, l?.level ?? 1);
+    if (grey < 1) winnerNotes.push({ kind: "grey", percent: toPercent(grey) });
+    winnerXpBonus = upsetXpBonus(w?.level ?? 1, l?.level ?? 1);
+    if (winnerXpBonus > 0)
+      winnerNotes.push({ kind: "upset", bonusPercent: toPercent(winnerXpBonus) });
+    winnerMultiplier = repeat * grey;
+    loserMultiplier = repeat;
   }
 
   const tasks: Promise<unknown>[] = [];
@@ -92,7 +158,7 @@ export async function recordMatchResult(opts: {
           if (res)
             results.set(opts.winner.socketId, {
               ...res,
-              rewardNote: winnerNote,
+              rewardNotes: winnerNotes,
             });
         },
       ),
@@ -102,7 +168,7 @@ export async function recordMatchResult(opts: {
     const loserSocketId = opts.loser!.socketId;
     tasks.push(
       updateLoser(opts.loser!.userId, loserMultiplier).then((res) => {
-        if (res) results.set(loserSocketId, { ...res, rewardNote: loserNote });
+        if (res) results.set(loserSocketId, { ...res, rewardNotes: loserNotes });
       }),
     );
   }
@@ -115,7 +181,7 @@ async function updateWinner(
   userId: string,
   multiplier: number,
   xpBonus: number,
-): Promise<MatchResult | null> {
+): Promise<Omit<MatchResult, "rewardNotes"> | null> {
   const before = await User.findById(userId).select(
     "xp level stats.currentStreak stats.bestStreak",
   );
@@ -169,7 +235,7 @@ async function updateWinner(
 async function updateLoser(
   userId: string,
   multiplier: number,
-): Promise<MatchResult | null> {
+): Promise<Omit<MatchResult, "rewardNotes"> | null> {
   const before = await User.findById(userId).select("xp level");
   if (!before) return null;
 

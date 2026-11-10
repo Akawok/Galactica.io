@@ -9,6 +9,28 @@
 	import { api } from '$lib/api';
 
 	type GameStatus = 'waiting' | 'playing' | 'roundEnd' | 'matchEnd';
+	type RewardNote =
+		| { kind: 'repeat'; matchNumber: number; percent: number }
+		| { kind: 'grey'; percent: number }
+		| { kind: 'upset'; bonusPercent: number }
+		| { kind: 'noFight'; self: boolean };
+
+	function noteText(note: RewardNote, won: boolean): string {
+		switch (note.kind) {
+			case 'noFight':
+				return note.self
+					? "Pas de gains : tu n'as pas combattu."
+					: "Pas de gains : ton adversaire n'a pas combattu.";
+			case 'repeat':
+				return `${note.matchNumber}e ${won ? 'victoire' : 'défaite'} du jour contre ce joueur : gains à ${note.percent} %.`;
+			case 'grey':
+				return note.percent === 0
+					? 'Pas de gains : ton adversaire a beaucoup moins de niveaux que toi.'
+					: `Ton adversaire a moins de niveaux que toi : gains à ${note.percent} %.`;
+			case 'upset':
+				return `+${note.bonusPercent} % d'XP : tu as battu plus fort que toi !`;
+		}
+	}
 
 	let canvas: HTMLCanvasElement;
 	let engine: GameEngine | null = null;
@@ -21,7 +43,7 @@
 		newLevel: number | null;
 		leveledUp: boolean;
 		galacticsGained: number;
-		rewardNote: 'limit' | 'grey' | 'upset' | null;
+		rewardNotes: RewardNote[];
 	} | null>(null);
 	let abandonResult = $state<{ deserter: string; creditsRecovered: number } | null>(null);
 	let isSpectator = $state(false);
@@ -101,7 +123,7 @@
 				leveledUp: boolean;
 				galacticsGained?: number;
 				newGalactics?: number | null;
-				rewardNote?: 'limit' | 'grey' | 'upset' | null;
+				rewardNotes?: RewardNote[];
 			}) => {
 				status = 'matchEnd';
 				matchResult = {
@@ -111,7 +133,7 @@
 					newLevel: data.newLevel,
 					leveledUp: data.leveledUp,
 					galacticsGained: data.galacticsGained ?? 0,
-					rewardNote: data.rewardNote ?? null
+					rewardNotes: data.rewardNotes ?? []
 				};
 				const updates: any = {};
 				if (data.newPoints !== null) updates.points = data.newPoints;
@@ -204,6 +226,9 @@
 				{:else}
 					<p>Il n'avait plus un crédit, rien à récupérer</p>
 				{/if}
+				{#if !isSpectator}
+					<p class="reward-note">Partie abandonnée : pas d'XP pour ce combat.</p>
+				{/if}
 				<button class="btn btn-primary" onclick={backToLobby}>Retour au lobby</button>
 			</div>
 		</div>
@@ -212,40 +237,42 @@
 	{#if status === 'matchEnd' && matchResult}
 		<div class="overlay">
 			<div class="overlay-card">
-				{#if matchResult.winner === $currentUser?.username}
-					<div class="winner-emoji">🏆</div>
-					<h2>Victoire !</h2>
-					<p>Tu as gagné <strong>+{matchResult.pointsEarned} Crédits</strong></p>
+				{#if isSpectator}
+					<div class="winner-emoji">🏁</div>
+					<h2>{matchResult.winner} remporte le duel</h2>
 				{:else}
-					<div class="winner-emoji">💫</div>
-					<h2>{matchResult.winner} a gagné</h2>
-					<p>Ce sera pour la prochaine</p>
-					{#if matchResult.pointsEarned > 0}
-						<p><strong>+{matchResult.pointsEarned} Crédits</strong> de consolation</p>
+					{#if matchResult.winner === $currentUser?.username}
+						<div class="winner-emoji">🏆</div>
+						<h2>Victoire !</h2>
+					{:else}
+						<div class="winner-emoji">💫</div>
+						<h2>{matchResult.winner} a gagné</h2>
+						<p>Ce sera pour la prochaine</p>
 					{/if}
-				{/if}
 
-				{#if matchResult.rewardNote === 'limit'}
-					<p class="reward-note">Plus de gains contre ce joueur aujourd'hui.</p>
-				{:else if matchResult.rewardNote === 'grey'}
-					<p class="reward-note">Gains réduits : ton adversaire avait beaucoup moins de niveaux.</p>
-				{:else if matchResult.rewardNote === 'upset'}
-					<p class="reward-note bonus">Bonus d'XP : tu as battu un adversaire plus haut niveau !</p>
-				{/if}
+					{#if matchResult.pointsEarned > 0 || (matchResult.xpGained ?? 0) > 0}
+						<div class="xp-reward">
+							{#if matchResult.leveledUp}
+								<span class="levelup-badge">Niveau {matchResult.newLevel}</span>
+							{/if}
+							{#if matchResult.pointsEarned > 0}
+								<span class="credits-gained">+{matchResult.pointsEarned} Crédits</span>
+							{/if}
+							{#if matchResult.galacticsGained > 0}
+								<span class="galactics-gained">
+									<Gem size={13} /> +{matchResult.galacticsGained}
+									{matchResult.galacticsGained > 1 ? 'Galactics' : 'Galactic'}
+								</span>
+							{/if}
+							{#if (matchResult.xpGained ?? 0) > 0}
+								<span class="xp-gained">+{matchResult.xpGained} XP</span>
+							{/if}
+						</div>
+					{/if}
 
-				{#if matchResult.xpGained !== null}
-					<div class="xp-reward">
-						{#if matchResult.leveledUp}
-							<span class="levelup-badge">Niveau {matchResult.newLevel}</span>
-						{/if}
-						{#if matchResult.galacticsGained > 0}
-							<span class="galactics-gained">
-								<Gem size={13} /> +{matchResult.galacticsGained}
-								{matchResult.galacticsGained > 1 ? 'Galactics' : 'Galactic'}
-							</span>
-						{/if}
-						<span class="xp-gained">+{matchResult.xpGained} XP</span>
-					</div>
+					{#each matchResult.rewardNotes as note}
+						<p class="reward-note" class:bonus={note.kind === 'upset'}>{noteText(note, matchResult.winner === $currentUser?.username)}</p>
+					{/each}
 				{/if}
 
 				<button class="btn btn-primary" onclick={backToLobby}>Retour au lobby</button>
@@ -367,6 +394,10 @@
 		gap: 0.3rem;
 	}
 
+	.credits-gained {
+		color: #ffcc55;
+		font-weight: 700;
+	}
 	.xp-gained {
 		font-size: 1.1rem;
 		font-weight: 700;

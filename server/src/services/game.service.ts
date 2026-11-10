@@ -22,8 +22,16 @@ export const GAME_CONFIG = {
   DESERTION_PENALTY_CAP: 0.5,
   XP_PER_WIN: 120,
   XP_PER_LOSS: 40,
-  // Anti-farming: rewarded matches between the same two players per rolling 24h
-  REWARDED_MATCHES_PER_OPPONENT: 3,
+  // Daily anti-farming counters reset at midnight in this zone, the same moment for everyone
+  DAILY_RESET_TIMEZONE: "Europe/Paris",
+  // Anti-farming: wins over the same opponent since the daily reset keep full rewards up to
+  // this count, then fade by a step per extra win down to a floor (never zero). The loser's
+  // rewards follow the same count, which is also their number of losses to that opponent
+  FULL_REWARD_MATCHES_PER_OPPONENT: 5,
+  REPEAT_REWARD_STEP: 0.15,
+  REPEAT_REWARD_FLOOR: 0.25,
+  // A loser below this travelled distance who never dealt damage did not really fight
+  MIN_FIGHT_DISTANCE: 300,
   // Winner rewards fade out when the loser is this many levels below (WoW-style grey targets)
   GREY_GAP_START: 5,
   GREY_GAP_ZERO: 10,
@@ -82,6 +90,9 @@ export interface PlayerState extends PlayerStats {
   lastDamagedAt: number;
   invulnerableUntil: number;
   lastStandUsed: boolean;
+  // Whole-match totals, used to tell a real fight from a farmed one
+  damageDealt: number;
+  distanceMoved: number;
   viewLag: number;
   history: { t: number; x: number; y: number }[];
 }
@@ -170,6 +181,8 @@ export function createPlayerState(
     lastDamagedAt: -Infinity,
     invulnerableUntil: -Infinity,
     lastStandUsed: false,
+    damageDealt: 0,
+    distanceMoved: 0,
     viewLag: 0,
     history: [],
     ...stats,
@@ -218,6 +231,8 @@ export function applyInput(
   if (input.keys.includes("q") || input.keys.includes("a")) dx -= 1;
   if (input.keys.includes("d")) dx += 1;
 
+  const startX = player.x;
+  const startY = player.y;
   const len = Math.sqrt(dx * dx + dy * dy);
   if (len > 0) {
     player.x = clampToMapX(player.x + (dx / len) * player.speed);
@@ -247,6 +262,8 @@ export function applyInput(
       );
     }
   }
+
+  player.distanceMoved += Math.hypot(player.x - startX, player.y - startY);
 
   const muzzleOffset = GAME_CONFIG.SHIP_RADIUS + GAME_CONFIG.BULLET_RADIUS + 1;
   const cos = Math.cos(player.angle);
@@ -453,6 +470,7 @@ function applyHit(
   damage *= 1 - target.damageReduction;
 
   target.lastDamagedAt = now;
+  if (shooter) shooter.damageDealt += Math.min(damage, target.hp);
   if (target.hp - damage <= 0 && target.perks.lastStand && !target.lastStandUsed) {
     target.lastStandUsed = true;
     target.hp = 1;

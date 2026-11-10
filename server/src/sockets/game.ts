@@ -466,6 +466,10 @@ async function endMatch(
       const results = await recordMatchResult({
         winner: { socketId: winner.id, userId: winner.userId },
         loser: loser ? { socketId: loser.id, userId: loser.userId } : undefined,
+        loserFought:
+          !loser ||
+          (loser.damageDealt > 0 ||
+            loser.distanceMoved >= GAME_CONFIG.MIN_FIGHT_DISTANCE),
       });
 
       await saveGameRecord({
@@ -489,7 +493,7 @@ async function endMatch(
         playerSocket?.emit("game:matchEnd", {
           ...matchEndBase,
           pointsEarned: data?.pointsGained ?? 0,
-          rewardNote: data?.rewardNote ?? null,
+          rewardNotes: data?.rewardNotes ?? [],
           newPoints: data?.points ?? null,
           xpGained: data?.xpGained ?? null,
           newXP: data?.xp ?? null,
