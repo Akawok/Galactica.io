@@ -13,7 +13,7 @@ export async function chatRoutes(app: FastifyInstance) {
       const messages = await ChatMessage.find({ timestamp: { $gte: since } })
         .sort({ timestamp: -1 })
         .limit(100)
-        .select("username message timestamp -_id")
+        .select("username message timestamp level system -_id")
         .lean();
       return reply.send({ messages: messages.reverse() });
     },

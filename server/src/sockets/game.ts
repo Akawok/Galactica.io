@@ -22,7 +22,7 @@ import {
   recordMatchResult,
   saveGameRecord,
 } from "../services/match.service.js";
-import { rooms } from "./lobby.js";
+import { announceLevelChange, rooms } from "./lobby.js";
 
 interface PlayerEntry {
   socket: Socket;
@@ -33,6 +33,7 @@ interface PlayerEntry {
     activeBullet: string;
     activeBulletSecondary: string;
     stats: PlayerStats;
+    level: number;
   };
 }
 
@@ -101,6 +102,7 @@ function buildStartPayload(room: RoomState) {
       ({
         id,
         username,
+        level,
         x,
         y,
         angle,
@@ -125,6 +127,7 @@ function buildStartPayload(room: RoomState) {
         dash: perks.dash,
         id,
         username,
+        level,
         x,
         y,
         angle,
@@ -176,6 +179,7 @@ export function registerGameSocket(
       entry.player.activeBullet,
       entry.player.activeBulletSecondary,
       entry.player.stats,
+      entry.player.level,
     );
     room.players.set(entry.socket.id, state);
     room.scores.set(entry.socket.id, 0);
@@ -494,6 +498,8 @@ async function endMatch(
           galacticsGained: data?.galacticsGained ?? 0,
           newGalactics: data?.galactics ?? null,
         });
+        if (data?.leveledUp)
+          announceLevelChange(io, p.userId, p.username, p.level, data.level);
       }
 
       for (const spectatorId of room.spectators) {

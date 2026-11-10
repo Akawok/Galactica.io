@@ -9,6 +9,7 @@
 	import { MAX_LEVEL } from '$lib/shared/xp';
 	import { GAME_EVENT, LOBBY_EVENT } from '$lib/shared/events';
 	import LoadoutRow from '$lib/components/LoadoutRow.svelte';
+	import GradeBadge from '$lib/components/GradeBadge.svelte';
 	import ItemPopover from '$lib/components/ItemPopover.svelte';
 	import AttributesPanel from '$lib/components/AttributesPanel.svelte';
 	import { BRANCHES } from '$lib/attributesUi';
@@ -41,6 +42,7 @@
 	interface Player {
 		socketId: string;
 		username: string;
+		level?: number;
 		status: string;
 	}
 	interface Room {
@@ -552,6 +554,7 @@
 						<div class="social-item">
 							<span class="dot" class:idle={p.status === 'idle'} class:busy={p.status !== 'idle'}
 							></span>
+							<GradeBadge level={p.level} />
 							<span class="social-name" class:me={p.username === $currentUser?.username}>
 								{p.username}
 								{#if p.username === $currentUser?.username}<span class="you">(toi)</span>{/if}
@@ -569,11 +572,20 @@
 				<div class="chat-col-title"><MessageSquare size={14} /> Chat</div>
 				<div class="messages">
 					{#each $chatMessages as msg}
-						<div class="message" class:own={msg.username === $currentUser?.username}>
-							<span class="msg-time">{formatTime(msg.timestamp)}</span>
-							<span class="msg-author">{msg.username}</span>
-							<span class="msg-text">{msg.message}</span>
-						</div>
+						{#if msg.system}
+							<div class="message promotion">
+								<span class="msg-time">{formatTime(msg.timestamp)}</span>
+								<span class="msg-text">🎖️ {msg.message}</span>
+								<GradeBadge level={msg.level} />
+							</div>
+						{:else}
+							<div class="message" class:own={msg.username === $currentUser?.username}>
+								<span class="msg-time">{formatTime(msg.timestamp)}</span>
+								{#if msg.level}<GradeBadge level={msg.level} />{/if}
+								<span class="msg-author">{msg.username}</span>
+								<span class="msg-text">{msg.message}</span>
+							</div>
+						{/if}
 					{:else}
 						<p class="empty-text">Pas encore de message</p>
 					{/each}
@@ -747,7 +759,7 @@
 					{#each lbSorted as p, i (p.username)}
 						<div class="lb-row" class:lb-me={p.username === $currentUser?.username}>
 							<span class="lb-rank">{lbMedal(i)}</span>
-							<span class="lb-name">{p.username}</span>
+							<span class="lb-name"><GradeBadge level={p.level} /> {p.username}</span>
 							<span class="lb-val" class:lb-desertions={lbSort === 'desertions'}>
 								{#if lbSort === 'wins'}{p.stats.wins}
 								{:else if lbSort === 'losses'}{p.stats.losses}
@@ -1413,6 +1425,17 @@
 		align-items: baseline;
 		font-size: 0.78rem;
 		flex-wrap: wrap;
+	}
+	.message.promotion {
+		align-items: center;
+		padding: 0.25rem 0.45rem;
+		border-radius: 6px;
+		background: linear-gradient(90deg, rgba(255, 215, 0, 0.12), transparent);
+		border-left: 2px solid #ffd700;
+	}
+	.message.promotion .msg-text {
+		color: #ffe680;
+		font-weight: 600;
 	}
 	.message.own .msg-author {
 		color: #7b8cff;

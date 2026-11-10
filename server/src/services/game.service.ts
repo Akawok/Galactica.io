@@ -51,15 +51,19 @@ export function cooldownTicks(cooldownMs: number): number {
   return Math.max(1, Math.round(cooldownMs / GAME_CONFIG.TICK_RATE));
 }
 
-export async function loadPlayerStats(userId: string): Promise<PlayerStats> {
+export async function loadPlayerStats(
+  userId: string,
+): Promise<{ stats: PlayerStats; level: number }> {
   const user = await User.findById(userId).select("attributes level").lean();
-  return computeStats(effectiveAttributes(user?.attributes, user?.level ?? 1));
+  const level = user?.level ?? 1;
+  return { stats: computeStats(effectiveAttributes(user?.attributes, level)), level };
 }
 
 export interface PlayerState extends PlayerStats {
   id: string;
   userId: string;
   username: string;
+  level: number;
   x: number;
   y: number;
   angle: number;
@@ -141,12 +145,14 @@ export function createPlayerState(
   bulletSprite: string,
   bulletSpriteSecondary: string,
   stats: PlayerStats,
+  level = 1,
 ): PlayerState {
   const { x, y } = getSpawnPosition(playerIndex);
   return {
     id: socketId,
     userId,
     username,
+    level,
     x,
     y,
     angle: playerIndex === 0 ? 0 : Math.PI,

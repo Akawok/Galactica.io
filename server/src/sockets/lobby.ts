@@ -2,6 +2,7 @@ import { randomBytes } from "crypto";
 import type { Server, Socket } from "socket.io";
 import type { RoomState } from "../services/game.service.js";
 import { loadPlayerStats } from "../services/game.service.js";
+import { getGrade } from "../shared/grades.js";
 import {
   registerGameSocket,
   cleanupRoomInputs,
@@ -22,6 +23,7 @@ interface ConnectedPlayer {
   socketId: string;
   userId: string;
   username: string;
+  level: number;
   status: "idle" | "in-game" | "spectating";
   activeShip: string;
   activeBullet: string;
@@ -113,9 +115,10 @@ function broadcastLobbyState(io: Server) {
 
 function doBroadcastLobbyState(io: Server) {
   const players = Array.from(connectedPlayers.values()).map(
-    ({ socketId, username, status }) => ({
+    ({ socketId, username, level, status }) => ({
       socketId,
       username,
+      level,
       status,
     }),
   );
@@ -222,6 +225,39 @@ async function handlePlayerLeave(io: Server, socketId: string, roomId: string) {
   }
 }
 
+// Keeps the lobby list in sync after a match and tells everyone when someone reaches a new grade
+export function announceLevelChange(
+  io: Server,
+  userId: string,
+  username: string,
+  oldLevel: number,
+  newLevel: number,
+) {
+  for (const p of connectedPlayers.values()) {
+    if (p.userId === userId) p.level = newLevel;
+  }
+  broadcastLobbyState(io);
+
+  const grade = getGrade(newLevel);
+  if (grade.label === getGrade(oldLevel).label) return;
+  const now = Date.now();
+  const message = `${username} passe ${grade.label} !`;
+  ChatMessage.create({
+    username,
+    message,
+    timestamp: new Date(now),
+    level: newLevel,
+    system: true,
+  }).catch(() => {});
+  io.emit("chat:message", {
+    username,
+    message,
+    timestamp: now,
+    level: newLevel,
+    system: true,
+  });
+}
+
 export function registerLobbySocket(io: Server, socket: Socket) {
   const userId = socket.data.userId as string | undefined;
   if (!userId) {
@@ -236,13 +272,14 @@ export function registerLobbySocket(io: Server, socket: Socket) {
 
   guard(socket, "user:join", async () => {
     const user = await User.findById(userId)
-      .select("username activeShip activeBullet activeBulletSecondary")
+      .select("username level activeShip activeBullet activeBulletSecondary")
       .lean();
     if (!user) return;
     connectedPlayers.set(socket.id, {
       socketId: socket.id,
       userId,
       username: user.username,
+      level: user.level ?? 1,
       status: "idle",
       activeShip: user.activeShip ?? "spaceship-01",
       activeBullet: user.activeBullet ?? "bullet1",
@@ -346,9 +383,9 @@ export function registerLobbySocket(io: Server, socket: Socket) {
       return;
     }
 
-    let stats1, stats2;
+    let profile1, profile2;
     try {
-      [stats1, stats2] = await Promise.all([
+      [profile1, profile2] = await Promise.all([
         loadPlayerStats(player1.userId),
         loadPlayerStats(player.userId),
       ]);
@@ -364,8 +401,8 @@ export function registerLobbySocket(io: Server, socket: Socket) {
     }
 
     registerGameSocket(io, roomId, room, [
-      { socket: player1Socket, player: { ...player1, stats: stats1 } },
-      { socket, player: { ...player, stats: stats2 } },
+      { socket: player1Socket, player: { ...player1, ...profile1 } },
+      { socket, player: { ...player, ...profile2 } },
     ]);
 
     broadcastLobbyState(io);
@@ -448,22 +485,25 @@ export function registerLobbySocket(io: Server, socket: Socket) {
     player.lastChatAt = now;
 
     const account = await User.findById(player.userId)
-      .select("mutedUntil")
+      .select("mutedUntil level")
       .lean();
     if (account && isMuted(account)) {
       socket.emit("chat:blocked", { reason: "Tu es réduit au silence" });
       return;
     }
+    if (account?.level) player.level = account.level;
 
     ChatMessage.create({
       username: player.username,
       message: sanitized,
       timestamp: new Date(now),
+      level: player.level,
     }).catch(() => {});
     io.emit("chat:message", {
       username: player.username,
       message: sanitized,
       timestamp: now,
+      level: player.level,
     });
   });
 }

@@ -4,6 +4,8 @@ export interface ChatMessage {
 	username: string;
 	message: string;
 	timestamp: number;
+	level?: number;
+	system?: boolean;
 }
 
 export const chatMessages = writable<ChatMessage[]>([]);

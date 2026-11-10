@@ -22,6 +22,7 @@ import {
 	type PredictedPlayer
 } from './physics';
 import { PERK_CONFIG } from '$lib/shared/attributes';
+import { getGrade } from '$lib/shared/grades';
 import type { Socket } from 'socket.io-client';
 
 // Remote entities are rendered this far in the past so there are always two snapshots to blend
@@ -81,6 +82,7 @@ interface BulletPayload {
 }
 interface StartPlayer extends PlayerState {
 	username: string;
+	level?: number;
 	sprite: string;
 	bulletSprite: string;
 	bulletSpriteSecondary: string;
@@ -592,7 +594,15 @@ export class GameEngine {
 		nameText.anchor.set(0.5, 1);
 		nameText.y = -32;
 
-		container.addChild(hitbox, hpBg, hpBar, energyBg, energyBar, shipSprite, nameText);
+		const grade = getGrade(p.level ?? 1);
+		const gradeText = new Text({
+			text: grade.label.toUpperCase(),
+			style: new TextStyle({ fill: grade.color, fontSize: 9, fontWeight: '700', letterSpacing: 1 })
+		});
+		gradeText.anchor.set(0.5, 1);
+		gradeText.y = -45;
+
+		container.addChild(hitbox, hpBg, hpBar, energyBg, energyBar, shipSprite, nameText, gradeText);
 		container.x = p.x;
 		container.y = p.y;
 		shipSprite.rotation = p.angle + Math.PI / 2;
