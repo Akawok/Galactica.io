@@ -1,0 +1,39 @@
+# Développement : hot reload du serveur et du client. `docker compose up` → http://localhost:5173
+# Le client proxifie /api et /socket.io vers le serveur (vite.config.ts) : même origine qu'en prod.
+name: galactica
+
+services:
+  mongo:
+    image: mongo:7.0
+    ports: ["127.0.0.1:27017:27017"]
+    volumes: [mongo-dev:/data/db]
+
+  server:
+    image: node:22-slim
+    working_dir: /app
+    command: sh -c "npm install && npm run build && npm run dev"
+    env_file: .env
+    environment:
+      MONGO_URI: mongodb://mongo:27017/galactica
+      CLIENT_URL: http://localhost:5173
+      TRUST_PROXY: "true"   # les tests changent X-Forwarded-For pour échapper au rate limit
+      CAPTURE_MAILS: "true" # expose /api/test/mails, dev uniquement
+    volumes:
+      - ./server:/app
+      - /app/node_modules # binaires Linux (bcrypt) hors du dossier de la machine hôte
+    depends_on: [mongo]
+
+  client:
+    image: node:22-slim
+    working_dir: /app
+    command: sh -c "npm install && npm run dev -- --host"
+    environment:
+      API_PROXY: http://server:3000
+    ports: ["5173:5173"]
+    volumes:
+      - ./client:/app
+      - /app/node_modules
+    depends_on: [server]
+
+volumes:
+  mongo-dev:

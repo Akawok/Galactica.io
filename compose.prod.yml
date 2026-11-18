@@ -1,0 +1,64 @@
+# Production (serveur nathan) : lancé par /srv/galactica/deploy.sh après chaque push sur main.
+# Caddy (stack à part, /srv/caddy) sert https://galactica.natolive.fr via le réseau externe `proxy` :
+# /api/* et /socket.io/* → galactica-api, le reste → galactica (client statique).
+# Accès direct sans domaine : http://57.129.174.3:8084 (même routage).
+# Les noms sur `proxy` sont partagés entre projets, d'où les alias préfixés.
+# `.env` à côté de ce fichier (non versionné) : JWT_SECRET, IMAGE_TAG.
+name: galactica
+
+services:
+  mongo:
+    image: mongo:7.0
+    restart: unless-stopped
+    volumes: [mongo-data:/data/db]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Image construite par la CI (GHCR) ; IMAGE_TAG (sha du commit déployé) est écrit dans `.env` par deploy.sh.
+  server:
+    image: ghcr.io/akawok/galactica-server:${IMAGE_TAG:?IMAGE_TAG manquant dans .env}
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET manquant dans .env}
+      MONGO_URI: mongodb://mongo:27017/galactica
+      # Domaine + accès direct par IP (HTTP, port 8084 du Caddy partagé) ; le premier sert aux liens des mails.
+      CLIENT_URL: https://galactica.natolive.fr,http://57.129.174.3:8084
+    # Images d'items (uploads de l'admin) : le volume est rempli depuis l'image au premier démarrage.
+    volumes: [assets:/app/assets]
+    depends_on:
+      mongo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+    networks:
+      default:
+      proxy:
+        aliases: [galactica-api]
+
+  client:
+    image: ghcr.io/akawok/galactica-client:${IMAGE_TAG:?IMAGE_TAG manquant dans .env}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      proxy:
+        aliases: [galactica]
+
+volumes:
+  mongo-data:
+  assets:
+
+networks:
+  proxy:
+    external: true

@@ -65,7 +65,7 @@ await app.register(fastifyHelmet, {
       scriptSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
       imgSrc: ["'self'", "data:", "blob:"],
-      connectSrc: ["'self'", config.clientUrl],
+      connectSrc: ["'self'", ...config.clientUrls],
       objectSrc: ["'none'"],
       frameAncestors: ["'none'"],
       baseUri: ["'self'"],
@@ -81,7 +81,7 @@ await app.register(fastifyHelmet, {
 await app.register(fastifyCookie);
 
 await app.register(fastifyCors, {
-  origin: config.clientUrl,
+  origin: config.clientUrls,
   credentials: true,
   methods: ["GET", "POST", "PATCH"],
   allowedHeaders: ["Content-Type", "Authorization", "x-csrf-token"],
@@ -92,7 +92,7 @@ await app.register(fastifyRateLimit, {
   max: 300,
   timeWindow: "1 minute",
   keyGenerator: (req) => req.account?.id ?? req.ip,
-  allowList: (req) => req.url === "/health",
+  allowList: (req) => req.url === "/api/health",
   errorResponseBuilder: (_req, context) => ({
     statusCode: 429,
     error: "Too Many Requests",
@@ -159,27 +159,33 @@ app.setNotFoundHandler((_req, reply) =>
   reply.code(404).send({ error: "Ressource introuvable" }),
 );
 
-await app.register(authRoutes);
-await app.register(shopRoutes);
-await app.register(statsRoutes);
-await app.register(attributesRoutes);
-await app.register(leaderboardRoutes);
-await app.register(chatRoutes);
-await app.register(adminRoutes);
-await app.register(adminItemsRoutes);
-await app.register(adminSiteRoutes);
-await app.register(assetsRoutes);
+// Everything under /api: Caddy serves the client on the same origin and routes /api and /socket.io here.
+await app.register(
+  async (api) => {
+    await api.register(authRoutes);
+    await api.register(shopRoutes);
+    await api.register(statsRoutes);
+    await api.register(attributesRoutes);
+    await api.register(leaderboardRoutes);
+    await api.register(chatRoutes);
+    await api.register(adminRoutes);
+    await api.register(adminItemsRoutes);
+    await api.register(adminSiteRoutes);
+    await api.register(assetsRoutes);
 
-app.get("/health", async () => ({ status: "ok" }));
+    api.get("/health", async () => ({ status: "ok" }));
 
-if (config.captureMails) {
-  app.log.warn("CAPTURE_MAILS actif : /test/mails est exposé (jamais en prod)");
-  app.get("/test/mails", async () => ({ mails: sentMails }));
-}
+    if (config.captureMails) {
+      api.log.warn("CAPTURE_MAILS actif : /api/test/mails est exposé (jamais en prod)");
+      api.get("/test/mails", async () => ({ mails: sentMails }));
+    }
+  },
+  { prefix: "/api" },
+);
 
 const io = new Server(httpServer, {
   cors: {
-    origin: config.clientUrl,
+    origin: config.clientUrls,
     methods: ["GET", "POST"],
     credentials: true,
   },
@@ -189,7 +195,7 @@ const io = new Server(httpServer, {
   // with the player's cookie. Clients without an Origin header are not browsers.
   allowRequest: (req, callback) => {
     const origin = req.headers.origin;
-    callback(null, !origin || origin === config.clientUrl);
+    callback(null, !origin || config.clientUrls.includes(origin));
   },
   maxHttpBufferSize: 8 * 1024,
   pingTimeout: 20_000,

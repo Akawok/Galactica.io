@@ -7,7 +7,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "seed": "tsc && node dist/seed.js",
-    "test": "node --test test/"
+    "test": "node --test 'test/*.test.mjs'"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.2",

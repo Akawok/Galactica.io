@@ -25,3 +25,6 @@ npm-debug.log*
 
 # Claude Code (réglages locaux)
 .claude/
+
+# Images created by the test suite
+server/assets/*/test-*/
