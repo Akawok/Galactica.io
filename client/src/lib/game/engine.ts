@@ -47,6 +47,12 @@ const RETICLE_COLOR = 0x4dd9ff;
 const RETICLE_LOCK_COLOR = 0xff4d4d;
 const MISSILE_READY_COLOR = 0xffa040;
 const HIT_MARKER_MS = 160;
+const ZONE_COLOR = 0xff3050;
+const ZONE_WARNING_MS = 5000;
+const ZONE_TICK_SECONDS = 3;
+const ZONE_CALM_TEXT = '#a8b4dc';
+const ZONE_ALERT_TEXT = '#ff6b81';
+const ZONE_ANNOUNCE_MS = 2500;
 
 interface BlastParticle {
 	x: number;
@@ -110,6 +116,8 @@ export interface GameStatePayload {
 	players: PlayerDelta[];
 	bulletsAdded: BulletPayload[];
 	bulletsRemoved: string[];
+	// Ships the closing zone damaged this tick
+	zoneHits?: string[];
 	t: number;
 }
 interface StartPlayer extends PlayerState {
@@ -124,9 +132,20 @@ interface StartPlayer extends PlayerState {
 	primaryBulletSpeed?: number;
 	dash?: boolean;
 }
+export interface ZoneInfo {
+	x: number;
+	y: number;
+	startRadius: number;
+	delayMs: number;
+	shrinkMs: number;
+	// Server time the round started at
+	startedAt: number;
+}
+
 export interface GameStartPayload {
 	players: StartPlayer[];
 	config: { mapWidth: number; mapHeight: number };
+	zone?: ZoneInfo;
 	t?: number;
 }
 
@@ -181,6 +200,11 @@ function lerpAngle(a: number, b: number, k: number): number {
 	return a + d * k;
 }
 
+// 25 -> "0:25"
+function formatSeconds(total: number): string {
+	return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+}
+
 function clampX(x: number): number {
 	return Math.max(
 		GAME_CONFIG.SHIP_RADIUS,
@@ -214,6 +238,13 @@ export class GameEngine {
 	private blastGfx!: Graphics;
 	private shake = 0;
 	private reticle: Graphics | null = null;
+	private zone: ZoneInfo | null = null;
+	private zoneGfx!: Graphics;
+	private zoneText!: Text;
+	private zoneAlarmPlayed = false;
+	private lastCountdownTick: number | null = null;
+	// The zone stops closing while the round-end screen is up
+	private zoneFrozenAt: number | null = null;
 	private mouseOnCanvas = false;
 	private reticleSpin = 0;
 	private hitMarkerUntil = 0;
@@ -297,6 +328,8 @@ export class GameEngine {
 
 		this.starfield = new Starfield(this.app, this.mapWidth, this.mapHeight);
 
+		this.zoneGfx = new Graphics();
+		this.app.stage.addChild(this.zoneGfx);
 		this.thrusterGfx = new Graphics();
 		this.app.stage.addChild(this.thrusterGfx);
 		this.blastGfx = new Graphics();
@@ -318,6 +351,7 @@ export class GameEngine {
 			this.updateThrusterParticles(dt);
 			this.updateBlastParticles(dt);
 			this.updateShake(dt);
+			this.drawZone();
 			this.drawReticle(dt);
 		});
 
@@ -334,6 +368,15 @@ export class GameEngine {
 		this.scoreText.y = 12;
 		this.scoreText.anchor.set(0.5, 0);
 		this.hudContainer.addChild(this.scoreText);
+
+		this.zoneText = new Text({
+			text: '',
+			style: new TextStyle({ fill: '#ff6b81', fontSize: 16, fontWeight: 'bold', letterSpacing: 1 })
+		});
+		this.zoneText.x = this.mapWidth / 2;
+		this.zoneText.y = 38;
+		this.zoneText.anchor.set(0.5, 0);
+		this.hudContainer.addChild(this.zoneText);
 	}
 
 	private setupInputs(canvas: HTMLCanvasElement) {
@@ -582,6 +625,7 @@ export class GameEngine {
 			this.scoreText.x = this.mapWidth / 2;
 		}
 		if (payload.t !== undefined) this.updateClock(payload.t);
+		if (payload.zone) this.setZone(payload.zone);
 
 		const newPlayers = payload.players.filter((p) => !this.playerVisuals.has(p.id));
 		if (newPlayers.length === 0) return;
@@ -736,6 +780,7 @@ export class GameEngine {
 
 		let ackedSeq: number | null = null;
 		let serverClock: number | null = null;
+		const zoneHits = new Set(state.zoneHits ?? []);
 		for (const p of state.players) {
 			const visual = this.playerVisuals.get(p.id);
 			if (!visual) continue;
@@ -745,7 +790,7 @@ export class GameEngine {
 			if (p.hp !== undefined) {
 				const lost = visual.state.hp - p.hp;
 				visual.state.hp = p.hp;
-				if (lost > 0) this.onDamaged(p.id, visual, lost);
+				if (lost > 0) this.onDamaged(p.id, visual, lost, zoneHits.has(p.id));
 			}
 			if (p.energy !== undefined) visual.state.energy = p.energy;
 			if (p.inv !== undefined) visual.state.inv = p.inv;
@@ -869,11 +914,14 @@ export class GameEngine {
 
 	pause() {
 		this.paused = true;
+		this.zoneFrozenAt = this.serverNow();
 	}
 
 	resetRound(
-		players?: { id: string; x: number; y: number; angle: number; hp: number; energy: number }[]
+		players?: { id: string; x: number; y: number; angle: number; hp: number; energy: number }[],
+		zone?: ZoneInfo
 	) {
+		if (zone) this.setZone(zone);
 		for (const entry of this.bulletVisuals.values()) entry.visual.destroy();
 		this.bulletVisuals.clear();
 		this.leftClick = false;
@@ -1064,18 +1112,96 @@ export class GameEngine {
 		}
 	}
 
-	private onDamaged(id: string, v: PlayerVisual, amount: number) {
+	private setZone(zone: ZoneInfo) {
+		this.zone = zone;
+		this.zoneFrozenAt = null;
+		this.zoneAlarmPlayed = false;
+		this.lastCountdownTick = null;
+	}
+
+	private setZoneText(text: string, alert: boolean) {
+		if (this.zoneText.text !== text) this.zoneText.text = text;
+		const fill = alert ? ZONE_ALERT_TEXT : ZONE_CALM_TEXT;
+		if (this.zoneText.style.fill !== fill) this.zoneText.style.fill = fill;
+	}
+
+	private zoneRadiusAt(zone: ZoneInfo, t: number): number {
+		const elapsed = t - zone.startedAt;
+		if (elapsed <= zone.delayMs) return zone.startRadius;
+		return zone.startRadius * Math.max(0, 1 - (elapsed - zone.delayMs) / zone.shrinkMs);
+	}
+
+	private drawZone() {
+		const g = this.zoneGfx;
+		g.clear();
+		const zone = this.zone;
+		if (!zone || !this.hasClock) {
+			this.setZoneText('', false);
+			return;
+		}
+		const t = this.zoneFrozenAt ?? this.serverNow();
+		const elapsed = t - zone.startedAt;
+		const untilClose = zone.delayMs - elapsed;
+
+		if (untilClose > 0) {
+			const seconds = Math.ceil(untilClose / 1000);
+			const alert = untilClose <= ZONE_WARNING_MS;
+			this.setZoneText(`Zone dans ${formatSeconds(seconds)}`, alert);
+			if (
+				seconds <= ZONE_TICK_SECONDS &&
+				seconds !== this.lastCountdownTick &&
+				this.zoneFrozenAt === null
+			) {
+				this.lastCountdownTick = seconds;
+				sfx.countdownTick();
+			}
+			return;
+		}
+		if (!this.zoneAlarmPlayed && this.zoneFrozenAt === null) {
+			this.zoneAlarmPlayed = true;
+			sfx.zoneAlarm();
+		}
+
+		const r = this.zoneRadiusAt(zone, t);
+		g.rect(0, 0, this.mapWidth, this.mapHeight).fill({ color: ZONE_COLOR, alpha: 0.13 });
+		if (r > 0) {
+			g.circle(zone.x, zone.y, r).cut();
+			g.circle(zone.x, zone.y, r).stroke({ width: 3, color: ZONE_COLOR, alpha: 0.85 });
+		}
+
+		const me = this.playerVisuals.get(this.myId);
+		const outside =
+			!this.isSpectator &&
+			!!me?.container.visible &&
+			Math.hypot(me.container.x - zone.x, me.container.y - zone.y) > r;
+		const untilClosed = Math.ceil((zone.delayMs + zone.shrinkMs - elapsed) / 1000);
+		if (outside) this.setZoneText('Hors zone !', true);
+		else if (-untilClose < ZONE_ANNOUNCE_MS) this.setZoneText('La zone se referme !', true);
+		else if (untilClosed > 0) this.setZoneText(`Zone fermée dans ${formatSeconds(untilClosed)}`, true);
+		else this.setZoneText('Zone fermée', true);
+	}
+
+	private onDamaged(id: string, v: PlayerVisual, amount: number, fromZone: boolean) {
 		const heavy = amount >= HEAVY_HIT_DAMAGE;
 		v.flashUntil = performance.now() + HIT_FLASH_MS;
-		this.spawnSparks(v.container.x, v.container.y, heavy ? 14 : 6);
 		const mine = id === this.myId && !this.isSpectator;
-		if (mine) {
+		if (fromZone) {
+			// Zone damage gets neither impact sparks nor a hit confirmation
+			if (mine) {
+				sfx.zoneZap();
+				this.addShake(2);
+			}
+		} else if (mine) {
+			this.spawnSparks(v.container.x, v.container.y, heavy ? 14 : 6);
 			sfx.hurt(heavy);
 			this.addShake(heavy ? 9 : 4);
-		} else if (!this.isSpectator) {
-			// Duels are one on one: damage on the other ship comes from us
-			sfx.hitConfirm();
-			this.hitMarkerUntil = performance.now() + HIT_MARKER_MS;
+		} else {
+			this.spawnSparks(v.container.x, v.container.y, heavy ? 14 : 6);
+			if (!this.isSpectator) {
+				// Duels are one on one: damage on the other ship comes from us
+				sfx.hitConfirm();
+				this.hitMarkerUntil = performance.now() + HIT_MARKER_MS;
+			}
 		}
 		if (v.state.hp <= 0) {
 			v.container.visible = false;

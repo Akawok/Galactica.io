@@ -17,6 +17,9 @@ import {
   resetShotState,
   regenerate,
   isInvulnerable,
+  applyZoneDamage,
+  zoneInfo,
+  zoneRadius,
 } from "../services/game.service.js";
 import {
   recordMatchResult,
@@ -100,6 +103,7 @@ function sanitizeInput(raw: unknown): ClientInput | null {
 function resetRound(room: RoomState) {
   room.bullets = [];
   room.lastSent?.clear();
+  room.nextZoneDamageAt = 0;
   let index = 0;
   for (const [, player] of room.players) {
     const pos = getSpawnPosition(index);
@@ -164,6 +168,7 @@ function buildStartPayload(room: RoomState) {
       mapWidth: GAME_CONFIG.MAP_WIDTH,
       mapHeight: GAME_CONFIG.MAP_HEIGHT,
     },
+    zone: zoneInfo(room.roundStartTime),
     t: room.simTime ?? Date.now(),
   };
 }
@@ -289,7 +294,14 @@ function makeTick(io: Server, roomId: string, room: RoomState) {
     for (const player of players) {
       if (player.id === room.bot?.id) {
         const target = players.find((p) => p.id !== player.id);
-        const input = nextBotInput(room.bot.brain, player, target, room.bullets, now);
+        const input = nextBotInput(
+          room.bot.brain,
+          player,
+          target,
+          room.bullets,
+          now,
+          zoneRadius(now - room.roundStartTime),
+        );
         for (const shot of applyInput(player, input, now)) {
           room.bullets.push(shot);
           added.push(toBulletPayload(shot, now));
@@ -335,12 +347,14 @@ function makeTick(io: Server, roomId: string, room: RoomState) {
 
     const hitRemoved = resolveCollisions(room.bullets, players, now);
     if (hitRemoved.length) removed.push(...hitRemoved);
+    const zoneHits = applyZoneDamage(room, players, now);
 
     // Sent every tick, even when empty: clients use it as their time reference
     io.to(roomId).emit("game:state", {
       players: buildPlayerDeltas(room, players, now),
       bulletsAdded: added,
       bulletsRemoved: removed,
+      ...(zoneHits.length ? { zoneHits } : {}),
       t: now,
     });
 
@@ -495,7 +509,11 @@ async function endRound(
       const spawnStates = Array.from(room.players.values()).map(
         ({ id, x, y, angle, hp, energy }) => ({ id, x, y, angle, hp, energy }),
       );
-      io.to(roomId).emit("game:roundStart", { scores, players: spawnStates });
+      io.to(roomId).emit("game:roundStart", {
+        scores,
+        players: spawnStates,
+        zone: zoneInfo(room.roundStartTime),
+      });
       startLoop(io, roomId, room);
     }, 3000);
   }

@@ -146,6 +146,24 @@ export function explosion() {
 	tone('sine', 90, 30, 0.7, 0.4);
 }
 
+// Each tick of damage taken outside the zone
+export function zoneZap() {
+	tone('sawtooth', 160, 90, 0.14, 0.09);
+	burst(0.1, 0.08, 'highpass', 3000, 1500);
+}
+
+// Last seconds before the zone closes in
+export function countdownTick() {
+	tone('square', 1000, 1000, 0.06, 0.04);
+}
+
+// The zone starts closing in
+export function zoneAlarm() {
+	tone('square', 880, 880, 0.12, 0.05);
+	tone('square', 660, 660, 0.12, 0.05, 0.18);
+	tone('square', 880, 880, 0.12, 0.05, 0.36);
+}
+
 export function dash(near = true) {
 	burst(0.22, near ? 0.12 : 0.06, 'bandpass', 400, 2400);
 }

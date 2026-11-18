@@ -45,6 +45,54 @@ export const GAME_CONFIG = {
   HISTORY_MS: 1000,
 };
 
+// The arena closes in after a while so every round ends: ships outside take damage, armor ignored
+export const ZONE = {
+  DELAY_MS: 30_000,
+  SHRINK_MS: 20_000,
+  DAMAGE: 10,
+  DAMAGE_INTERVAL_MS: 500,
+};
+const ZONE_CENTER = { x: GAME_CONFIG.MAP_WIDTH / 2, y: GAME_CONFIG.MAP_HEIGHT / 2 };
+// Reaches the corners, so the whole map is safe until the zone starts closing
+export const ZONE_START_RADIUS = Math.hypot(ZONE_CENTER.x, ZONE_CENTER.y);
+
+export function zoneRadius(elapsedMs: number): number {
+  if (elapsedMs <= ZONE.DELAY_MS) return ZONE_START_RADIUS;
+  return ZONE_START_RADIUS * Math.max(0, 1 - (elapsedMs - ZONE.DELAY_MS) / ZONE.SHRINK_MS);
+}
+
+// Everything the client needs to draw the same zone from its own clock
+export function zoneInfo(roundStartTime: number) {
+  return {
+    x: ZONE_CENTER.x,
+    y: ZONE_CENTER.y,
+    startRadius: ZONE_START_RADIUS,
+    delayMs: ZONE.DELAY_MS,
+    shrinkMs: ZONE.SHRINK_MS,
+    startedAt: roundStartTime,
+  };
+}
+
+export function isOutsideZone(p: { x: number; y: number }, radius: number): boolean {
+  return Math.hypot(p.x - ZONE_CENTER.x, p.y - ZONE_CENTER.y) > radius;
+}
+
+// Returns the ids of the ships the zone just damaged
+export function applyZoneDamage(room: RoomState, players: PlayerState[], now: number): string[] {
+  if (now - room.roundStartTime <= ZONE.DELAY_MS) return [];
+  if (now < (room.nextZoneDamageAt ?? 0)) return [];
+  room.nextZoneDamageAt = now + ZONE.DAMAGE_INTERVAL_MS;
+  const radius = zoneRadius(now - room.roundStartTime);
+  const hits: string[] = [];
+  for (const p of players) {
+    if (p.hp <= 0 || !isOutsideZone(p, radius)) continue;
+    p.hp = Math.max(0, p.hp - ZONE.DAMAGE);
+    p.lastDamagedAt = now;
+    hits.push(p.id);
+  }
+  return hits;
+}
+
 // Exact (fractional) number of ticks between two primary shots
 export function shotInterval(cooldownMs: number): number {
   return (cooldownMs * 60) / 1000;
@@ -131,6 +179,7 @@ export interface RoomState {
   training?: boolean;
   bot?: { id: string; brain: BotBrain; difficulty: BotDifficulty };
   simTime?: number;
+  nextZoneDamageAt?: number;
   lastSent?: Map<
     string,
     {

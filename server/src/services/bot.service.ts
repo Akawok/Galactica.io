@@ -23,6 +23,9 @@ const DODGE_MARGIN = 12;
 const STRAFE_SWITCH_MIN_MS = 900;
 const STRAFE_SWITCH_MAX_MS = 2200;
 const KEY_THRESHOLD = 0.38;
+// Distance kept from the closing zone's edge
+const ZONE_MARGIN = 70;
+const ZONE_PULL = 2.5;
 
 export type BotDifficulty = "facile" | "normal" | "difficile";
 export const BOT_DIFFICULTIES: BotDifficulty[] = ["facile", "normal", "difficile"];
@@ -165,6 +168,7 @@ export function nextBotInput(
   target: PlayerState | undefined,
   bullets: BulletState[],
   now: number,
+  zoneRadius: number,
 ): BotInput {
   brain.seq++;
   const profile = brain.profile;
@@ -243,6 +247,13 @@ export function nextBotInput(
     if (bot.x > GAME_CONFIG.MAP_WIDTH - WALL_MARGIN) mx -= 1;
     if (bot.y < WALL_MARGIN) my += 1;
     if (bot.y > GAME_CONFIG.MAP_HEIGHT - WALL_MARGIN) my -= 1;
+  }
+  const toCenterX = GAME_CONFIG.MAP_WIDTH / 2 - bot.x;
+  const toCenterY = GAME_CONFIG.MAP_HEIGHT / 2 - bot.y;
+  const fromCenter = Math.hypot(toCenterX, toCenterY);
+  if (fromCenter > 1 && fromCenter > zoneRadius - ZONE_MARGIN) {
+    mx += (toCenterX / fromCenter) * ZONE_PULL;
+    my += (toCenterY / fromCenter) * ZONE_PULL;
   }
   input.keys = toKeys(mx, my);
 

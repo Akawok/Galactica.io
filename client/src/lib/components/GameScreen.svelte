@@ -9,7 +9,12 @@
 	import { goto } from '$app/navigation';
 	import { currentUser, auth } from '$lib/stores/auth';
 	import { getSocket } from '$lib/stores/socket';
-	import type { GameEngine, GameStartPayload, GameStatePayload } from '$lib/game/engine';
+	import type {
+		GameEngine,
+		GameStartPayload,
+		GameStatePayload,
+		ZoneInfo
+	} from '$lib/game/engine';
 
 	type GameStatus = 'waiting' | 'playing' | 'roundEnd' | 'matchEnd';
 	type RewardNote =
@@ -145,9 +150,10 @@
 			(data: {
 				scores: Record<string, number>;
 				players: { id: string; x: number; y: number; angle: number; hp: number; energy: number }[];
+				zone?: ZoneInfo;
 			}) => {
 				if (revealTimer) clearTimeout(revealTimer);
-				engine?.resetRound(data.players);
+				engine?.resetRound(data.players, data.zone);
 				status = 'playing';
 				roundResult = null;
 			}
