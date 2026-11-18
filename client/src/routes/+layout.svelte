@@ -75,10 +75,10 @@
 			{/if}
 			{#if $currentUser}
 				{@const grade = getGrade($currentUser.level ?? 1)}
-				<div class="nav-profile">
+				<a href="/account" class="nav-profile" title="Mon compte">
 					<span class="nav-username">{$currentUser.username}</span>
 					<span class="nav-grade" style="color: {grade.color}">{grade.label}</span>
-				</div>
+				</a>
 				<div class="nav-sep"></div>
 			{/if}
 			<div class="nav-credits">
@@ -222,10 +222,17 @@
 	}
 
 	.nav-profile {
+		text-decoration: none;
+		border-radius: 6px;
+		padding: 0.15rem 0.35rem;
+		transition: background 0.15s;
 		display: flex;
 		flex-direction: column;
 		align-items: flex-end;
 		gap: 0.05rem;
+	}
+	.nav-profile:hover {
+		background: rgba(77, 217, 255, 0.08);
 	}
 	.nav-username {
 		font-size: 0.85rem;

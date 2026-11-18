@@ -15,6 +15,9 @@ const SALT_ROUNDS = 12;
 export function hashPassword(password: string): Promise<string> {
   return bcrypt.hash(password, SALT_ROUNDS);
 }
+export function verifyPassword(password: string, hash: string): Promise<boolean> {
+  return bcrypt.compare(password, hash);
+}
 const DUMMY_HASH = "$2b$12$C6UzMDM.H6dfI/f/IKcEe.rTqQ0dqXlbBFsUVFm0z8ByRJyxNRVvS";
 
 const LOCKOUT_THRESHOLD = 8;
@@ -57,6 +60,15 @@ function registerFailure(key: string) {
     entry.count = 0;
     entry.windowEnd = now + FAILURE_WINDOW_MS;
   }
+}
+
+// A wrong current password counts like a failed login: same lockout, per account
+export function assertPasswordAttemptsAllowed(email: string) {
+  assertNotLockedOut(emailKey(email));
+}
+
+export function recordPasswordFailure(email: string) {
+  registerFailure(emailKey(email));
 }
 
 export function clearLoginFailures(email: string) {

@@ -79,7 +79,15 @@ export const api = {
 		sendVerification: () =>
 			post<{ ok: boolean; alreadyVerified?: boolean }>('/auth/send-verification'),
 		verifyEmail: (token: string) =>
-			post('/auth/verify-email', { token })
+			post('/auth/verify-email', { token }),
+		changeUsername: (username: string) =>
+			post<{ csrfToken: string; user: any }>('/auth/username', { username }),
+		changePassword: (currentPassword: string, newPassword: string, socketId?: string) =>
+			post<{ ok: boolean; csrfToken: string }>('/auth/password', {
+				currentPassword,
+				newPassword,
+				...(socketId ? { socketId } : {})
+			})
 	},
 	shop: {
 		items: () => request<{ items: any[] }>('/shop/items'),

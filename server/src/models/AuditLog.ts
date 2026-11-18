@@ -11,6 +11,7 @@ export type AuditAction =
   | "item-delete"
   | "kick"
   | "rename"
+  | "self-rename"
   | "resources"
   | "reset-attributes"
   | "verify-email"
@@ -45,6 +46,7 @@ const AuditLogSchema = new Schema<IAuditLog>({
       "item-delete",
       "kick",
       "rename",
+      "self-rename",
       "resources",
       "reset-attributes",
       "verify-email",

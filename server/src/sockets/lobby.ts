@@ -22,6 +22,7 @@ import {
 import { sanitizeChatMessage } from "../services/identity.service.js";
 import {
   disconnectUserSockets,
+  getIO,
   socketCountForUser,
   trackSocket,
   untrackSocket,
@@ -931,6 +932,15 @@ export function unequipFromConnected(slot: LoadoutSlot, sprite: string) {
   for (const player of connectedPlayers.values()) {
     if (player[slot] === sprite) player[slot] = DEFAULT_LOADOUT[slot];
   }
+}
+
+// The lobby keeps names in memory: a player renaming themselves must show up at once
+export function renameConnectedPlayer(userId: string, username: string) {
+  for (const player of connectedPlayers.values()) {
+    if (player.userId === userId) player.username = username;
+  }
+  const io = getIO();
+  if (io) broadcastLobbyState(io);
 }
 
 export function findOnlinePlayer(userId: string): OnlinePlayerView | null {

@@ -21,6 +21,7 @@ export interface IUser extends Document {
   role: UserRole;
   emailVerified: boolean;
   tokenVersion: number;
+  usernameChangedAt?: Date | null;
   bannedUntil?: Date | null;
   banReason?: string | null;
   mutedUntil?: Date | null;
@@ -68,6 +69,7 @@ const UserSchema = new Schema<IUser>({
   },
   emailVerified: { type: Boolean, default: false },
   tokenVersion: { type: Number, default: 0 },
+  usernameChangedAt: { type: Date, default: null },
   bannedUntil: { type: Date, default: null },
   banReason: { type: String, default: null },
   mutedUntil: { type: Date, default: null },

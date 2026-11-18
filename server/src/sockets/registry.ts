@@ -31,9 +31,14 @@ export function getUserSocketIds(userId: string): string[] {
   return Array.from(socketsByUser.get(userId) ?? []);
 }
 
-export function disconnectUserSockets(userId: string, reason: string) {
+export function disconnectUserSockets(
+  userId: string,
+  reason: string,
+  keepSocketId?: string,
+) {
   if (!io) return;
   for (const socketId of getUserSocketIds(userId)) {
+    if (socketId === keepSocketId) continue;
     const socket = io.sockets.sockets.get(socketId);
     if (!socket) continue;
     socket.emit("session:terminated", { reason });

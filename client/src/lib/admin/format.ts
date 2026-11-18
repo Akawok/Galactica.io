@@ -73,6 +73,7 @@ export const ACTION_LABEL: Record<string, string> = {
 	unban: 'Levée de ban',
 	mute: 'Mise en sourdine',
 	kick: 'Déconnexion forcée',
+	'self-rename': 'Pseudo changé par le joueur',
 	rename: 'Changement de pseudo',
 	'role-change': 'Changement de rôle',
 	resources: 'Ressources modifiées',
@@ -102,6 +103,7 @@ export function describeAudit(entry: { action: string; details?: Record<string, 
 		case 'mute':
 			return d.mutedUntil ? `jusqu'au ${formatDate(d.mutedUntil)}` : 'levée';
 		case 'rename':
+		case 'self-rename':
 			return `${d.from} → ${d.to}`;
 		case 'role-change':
 			return ROLE_LABEL[d.role] ?? d.role;
