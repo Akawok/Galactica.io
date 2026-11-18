@@ -20,7 +20,14 @@ import {
   applyZoneDamage,
   zoneInfo,
   zoneRadius,
+  PICKUPS,
+  type PickupState,
+  spawnPickup,
+  collectPickups,
+  updateBuffs,
+  activeBuffs,
 } from "../services/game.service.js";
+import { EMOTES } from "../shared/emotes.js";
 import {
   recordMatchResult,
   saveGameRecord,
@@ -80,6 +87,10 @@ const inputQueues = new Map<string, ClientInput[]>();
 const lastSeenSeq = new Map<string, number>();
 const lastProcessedSeq = new Map<string, number>();
 const inputCredits = new Map<string, number>();
+const lastEmoteAt = new Map<string, number>();
+
+// One emote per player at most this often, so the bubbles cannot be spammed
+const EMOTE_COOLDOWN_MS = 1500;
 
 function sanitizeInput(raw: unknown): ClientInput | null {
   if (!raw || typeof raw !== "object") return null;
@@ -102,6 +113,8 @@ function sanitizeInput(raw: unknown): ClientInput | null {
 
 function resetRound(room: RoomState) {
   room.bullets = [];
+  room.pickups = [];
+  room.nextPickupAt = room.roundStartTime + PICKUPS.FIRST_AT_MS;
   room.lastSent?.clear();
   room.nextZoneDamageAt = 0;
   let index = 0;
@@ -180,6 +193,7 @@ export function sendGameSnapshot(socket: Socket, room: RoomState) {
     players: [],
     bulletsAdded: room.bullets.map((b) => toBulletPayload(b, t)),
     bulletsRemoved: [],
+    pickupsAdded: room.pickups,
     t,
   });
 }
@@ -193,6 +207,8 @@ export function registerGameSocket(
 ) {
   room.status = "playing";
   room.roundStartTime = Date.now();
+  room.pickups = [];
+  room.nextPickupAt = room.roundStartTime + PICKUPS.FIRST_AT_MS;
 
   entries.forEach((entry, index) => {
     const state = createPlayerState(
@@ -248,6 +264,17 @@ export function registerGameSocket(
       if (!queue) return;
       if (queue.length >= MAX_QUEUE_LENGTH) queue.shift();
       queue.push(input);
+    });
+
+    entry.socket.removeAllListeners("game:emote");
+    entry.socket.on("game:emote", (index: unknown) => {
+      if (!Number.isInteger(index) || (index as number) < 0) return;
+      if ((index as number) >= EMOTES.length) return;
+      if (rooms.get(roomId) !== room || !room.players.has(entry.socket.id)) return;
+      const now = Date.now();
+      if (now - (lastEmoteAt.get(entry.socket.id) ?? 0) < EMOTE_COOLDOWN_MS) return;
+      lastEmoteAt.set(entry.socket.id, now);
+      io.to(roomId).emit("game:emote", { id: entry.socket.id, emote: index });
     });
   }
 
@@ -349,12 +376,20 @@ function makeTick(io: Server, roomId: string, room: RoomState) {
     if (hitRemoved.length) removed.push(...hitRemoved);
     const zoneHits = applyZoneDamage(room, players, now);
 
+    const pickupsTaken = collectPickups(room, players, now);
+    const dropped = spawnPickup(room, players, now);
+    const pickupsAdded: PickupState[] = dropped ? [dropped] : [];
+    // After the pickups, so a turbo taken this tick already counts
+    for (const player of players) updateBuffs(player, now);
+
     // Sent every tick, even when empty: clients use it as their time reference
     io.to(roomId).emit("game:state", {
       players: buildPlayerDeltas(room, players, now),
       bulletsAdded: added,
       bulletsRemoved: removed,
       ...(zoneHits.length ? { zoneHits } : {}),
+      ...(pickupsAdded.length ? { pickupsAdded } : {}),
+      ...(pickupsTaken.length ? { pickupsTaken } : {}),
       t: now,
     });
 
@@ -404,6 +439,10 @@ interface PlayerDelta {
   hp?: number;
   energy?: number;
   inv?: boolean;
+  // Changes with turbo: the owner's client predicts its movement with it
+  speed?: number;
+  // Active timed bonuses, comma-separated ("" when none)
+  buffs?: string;
   lastProcessedSeq?: number;
   inputClock?: number;
 }
@@ -444,6 +483,15 @@ function buildPlayerDeltas(
       delta.inv = inv;
       changed = true;
     }
+    if (!prev || prev.speed !== p.speed) {
+      delta.speed = p.speed;
+      changed = true;
+    }
+    const buffs = activeBuffs(p, now);
+    if (!prev || prev.buffs !== buffs) {
+      delta.buffs = buffs;
+      changed = true;
+    }
     const seq = lastProcessedSeq.get(p.id) ?? 0;
     if (!prev || prev.seq !== seq) changed = true;
     if (changed) {
@@ -458,6 +506,8 @@ function buildPlayerDeltas(
         energy: p.energy,
         inv,
         seq,
+        speed: p.speed,
+        buffs,
       });
     }
   }
@@ -478,6 +528,10 @@ async function endRound(
 
   if (winner) {
     room.scores.set(winner.id, (room.scores.get(winner.id) ?? 0) + 1);
+    // The bot gloats a little when it takes a round
+    if (winner.id === room.bot?.id) {
+      io.to(roomId).emit("game:emote", { id: winner.id, emote: EMOTES.indexOf("😎") });
+    }
   }
 
   const scores = Object.fromEntries(room.scores);
@@ -613,7 +667,10 @@ function cleanupSocketInput(io: Server, socketId: string) {
   lastSeenSeq.delete(socketId);
   lastProcessedSeq.delete(socketId);
   inputCredits.delete(socketId);
-  io.sockets.sockets.get(socketId)?.removeAllListeners("game:input");
+  lastEmoteAt.delete(socketId);
+  const socket = io.sockets.sockets.get(socketId);
+  socket?.removeAllListeners("game:input");
+  socket?.removeAllListeners("game:emote");
 }
 
 export function cleanupRoomInputs(io: Server, room: RoomState) {

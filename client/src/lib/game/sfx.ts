@@ -164,6 +164,11 @@ export function zoneAlarm() {
 	tone('square', 880, 880, 0.12, 0.05, 0.36);
 }
 
+// We picked up a power-up
+export function pickup() {
+	[660, 880, 1320].forEach((f, i) => tone('triangle', f, f * 1.02, 0.09, 0.08, i * 0.06));
+}
+
 export function dash(near = true) {
 	burst(0.22, near ? 0.12 : 0.06, 'bandpass', 400, 2400);
 }

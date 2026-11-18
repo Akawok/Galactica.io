@@ -5,6 +5,7 @@
 	import VolumeX from '@lucide/svelte/icons/volume-x';
 	import Music from '@lucide/svelte/icons/music';
 	import * as sfx from '$lib/game/sfx';
+	import { EMOTES } from '$lib/shared/emotes';
 	import { getMusicVolume, setMusicVolume, startMusic, stopMusic } from '$lib/game/music';
 	import { goto } from '$app/navigation';
 	import { currentUser, auth } from '$lib/stores/auth';
@@ -123,6 +124,8 @@
 		listen('game:state', (state: GameStatePayload) => {
 			if (status === 'playing') engine?.onGameState(state);
 		});
+
+		listen('game:emote', (data: { id: string; emote: number }) => engine?.onEmote(data));
 
 		listen(
 			'game:roundEnd',
@@ -427,6 +430,20 @@
 
 	{#if isSpectator}
 		<div class="spectator-badge">👁 Spectateur</div>
+	{:else}
+		<div class="emotes" aria-label="Emotes">
+			{#each EMOTES as emote, i (emote)}
+				<!-- Clicks and Space must not leave the focus on a button: Space fires -->
+				<button
+					class="emote"
+					tabindex="-1"
+					onmousedown={(e) => e.preventDefault()}
+					onclick={() => engine?.sendEmote(i)}
+				>
+					<kbd>{i + 1}</kbd>{emote}
+				</button>
+			{/each}
+		</div>
 	{/if}
 
 	<div class="volume">
@@ -667,6 +684,40 @@
 	.volume input {
 		width: 80px;
 		accent-color: #4dd9ff;
+	}
+	/* Top-left corner: the zone closes the corners first, so ships rarely sit under it there */
+	.emotes {
+		position: absolute;
+		top: 12px;
+		left: 12px;
+		display: flex;
+		gap: 0.35rem;
+		background: rgba(0, 0, 0, 0.55);
+		border: 1px solid rgba(100, 100, 255, 0.25);
+		border-radius: 12px;
+		padding: 0.3rem 0.45rem;
+		z-index: 5;
+	}
+	.emote {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.3rem;
+		background: rgba(255, 255, 255, 0.06);
+		border: 1px solid rgba(160, 168, 255, 0.2);
+		border-radius: 8px;
+		color: #e6e9ff;
+		cursor: pointer;
+		font-size: 0.8rem;
+		padding: 0.2rem 0.5rem;
+	}
+	.emote:hover {
+		background: rgba(77, 217, 255, 0.15);
+	}
+	.emote kbd {
+		font-family: inherit;
+		font-size: 0.65rem;
+		color: #a0a8ff;
+		opacity: 0.8;
 	}
 	.spectator-badge {
 		position: absolute;

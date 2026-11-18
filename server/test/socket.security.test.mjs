@@ -297,6 +297,33 @@ describe("cycle de vie des parties", () => {
     b.socket.emit("game:ready", { roomId });
     assert.ok(await replay);
   });
+
+  test("les emotes sont diffusées, limitées à la liste et anti-spam", async () => {
+    const { a, b } = await startDuel();
+    const heard = [];
+    b.socket.on("game:emote", (e) => heard.push(e));
+
+    const seen = waitFor(a.socket, "game:emote", 1000);
+    a.socket.emit("game:emote", 0);
+    assert.deepEqual(await seen, { id: a.socket.id, emote: 0 });
+    await sleep(100);
+    assert.equal(heard.length, 1, "l'adversaire voit l'emote");
+
+    // Spam pendant la limite, index hors liste, texte libre : rien ne passe
+    a.socket.emit("game:emote", 1);
+    b.socket.emit("game:emote", 99);
+    b.socket.emit("game:emote", -1);
+    b.socket.emit("game:emote", "<b>pwned</b>");
+    b.socket.emit("game:emote", 1.5);
+    await sleep(300);
+    assert.equal(heard.length, 1);
+
+    // Un joueur hors de la partie ne peut pas parler dedans
+    const c = await joinedSocket("emoteC");
+    c.socket.emit("game:emote", 2);
+    await sleep(300);
+    assert.equal(heard.length, 1);
+  });
 });
 
 describe("classement", () => {

@@ -93,6 +93,115 @@ export function applyZoneDamage(room: RoomState, players: PlayerState[], now: nu
   return hits;
 }
 
+// Power-ups dropped in the arena during a round; the first ship to touch one takes it
+export type PickupType = "shield" | "heal" | "rage" | "turbo";
+const PICKUP_TYPES: PickupType[] = ["shield", "heal", "rage", "turbo"];
+
+export const PICKUPS = {
+  RADIUS: 16,
+  FIRST_AT_MS: 5_000,
+  INTERVAL_MS: 7_000,
+  MAX_ON_MAP: 2,
+  // Never dropped on top of a ship
+  MIN_PLAYER_DISTANCE: 140,
+  SHIELD_MS: 4_000,
+  HEAL: 40,
+  RAGE_MS: 6_000,
+  RAGE_DAMAGE_MULT: 2,
+  TURBO_MS: 6_000,
+  TURBO_SPEED_MULT: 1.5,
+};
+
+export interface PickupState {
+  id: string;
+  type: PickupType;
+  x: number;
+  y: number;
+}
+
+// Drops a power-up at a random free spot inside the zone when it is time; returns it, if any
+export function spawnPickup(
+  room: RoomState,
+  players: PlayerState[],
+  now: number,
+): PickupState | null {
+  if (now < room.nextPickupAt || room.pickups.length >= PICKUPS.MAX_ON_MAP) return null;
+  room.nextPickupAt = now + PICKUPS.INTERVAL_MS;
+  const radius = zoneRadius(now - room.roundStartTime) * 0.8;
+  const margin = GAME_CONFIG.SHIP_RADIUS + PICKUPS.RADIUS;
+  // ponytail: random tries, a spot may not be found when the zone is tiny; the next interval retries
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const angle = Math.random() * Math.PI * 2;
+    const dist = Math.sqrt(Math.random()) * radius;
+    const x = ZONE_CENTER.x + Math.cos(angle) * dist;
+    const y = ZONE_CENTER.y + Math.sin(angle) * dist;
+    if (x < margin || x > GAME_CONFIG.MAP_WIDTH - margin) continue;
+    if (y < margin || y > GAME_CONFIG.MAP_HEIGHT - margin) continue;
+    if (players.some((p) => Math.hypot(p.x - x, p.y - y) < PICKUPS.MIN_PLAYER_DISTANCE)) continue;
+    const pickup: PickupState = {
+      id: `${room.roomId}:p${++room.pickupSeq}`,
+      type: PICKUP_TYPES[Math.floor(Math.random() * PICKUP_TYPES.length)],
+      x: Math.round(x),
+      y: Math.round(y),
+    };
+    room.pickups.push(pickup);
+    return pickup;
+  }
+  return null;
+}
+
+// Gives each touched power-up to the ship touching it; returns what was taken, by whom
+export function collectPickups(
+  room: RoomState,
+  players: PlayerState[],
+  now: number,
+): { id: string; by: string; type: PickupType }[] {
+  const taken: { id: string; by: string; type: PickupType }[] = [];
+  const reach = GAME_CONFIG.SHIP_RADIUS + PICKUPS.RADIUS;
+  room.pickups = room.pickups.filter((pickup) => {
+    const player = players.find(
+      (p) => p.hp > 0 && Math.hypot(p.x - pickup.x, p.y - pickup.y) < reach,
+    );
+    if (!player) return true;
+    applyPickup(player, pickup.type, now);
+    taken.push({ id: pickup.id, by: player.id, type: pickup.type });
+    return false;
+  });
+  return taken;
+}
+
+function applyPickup(player: PlayerState, type: PickupType, now: number): void {
+  if (type === "shield") {
+    player.shieldUntil = now + PICKUPS.SHIELD_MS;
+    player.invulnerableUntil = Math.max(player.invulnerableUntil, player.shieldUntil);
+  } else if (type === "heal") {
+    player.hp = Math.min(player.maxHp, player.hp + PICKUPS.HEAL);
+  } else if (type === "rage") {
+    player.rageUntil = now + PICKUPS.RAGE_MS;
+  } else {
+    player.turboUntil = now + PICKUPS.TURBO_MS;
+  }
+}
+
+// Called every tick: timed bonuses run out on their own
+export function updateBuffs(player: PlayerState, now: number): void {
+  player.speed =
+    now < player.turboUntil ? player.baseSpeed * PICKUPS.TURBO_SPEED_MULT : player.baseSpeed;
+}
+
+// Active timed bonuses, sorted, for the clients to draw (the shield is also an invulnerability)
+export function activeBuffs(player: PlayerState, now: number): string {
+  const buffs: string[] = [];
+  if (now < player.rageUntil) buffs.push("rage");
+  if (now < player.shieldUntil) buffs.push("shield");
+  if (now < player.turboUntil) buffs.push("turbo");
+  return buffs.join(",");
+}
+
+function damageMult(player: PlayerState, now: number): number {
+  return now < player.rageUntil ? PICKUPS.RAGE_DAMAGE_MULT : 1;
+}
+
 // Exact (fractional) number of ticks between two primary shots
 export function shotInterval(cooldownMs: number): number {
   return (cooldownMs * 60) / 1000;
@@ -139,6 +248,11 @@ export interface PlayerState extends PlayerStats {
   lastDamagedAt: number;
   invulnerableUntil: number;
   lastStandUsed: boolean;
+  // Power-up timers (server time) and the speed without turbo
+  shieldUntil: number;
+  rageUntil: number;
+  turboUntil: number;
+  baseSpeed: number;
   // Whole-match totals, used to tell a real fight from a farmed one
   damageDealt: number;
   distanceMoved: number;
@@ -180,6 +294,9 @@ export interface RoomState {
   bot?: { id: string; brain: BotBrain; difficulty: BotDifficulty };
   simTime?: number;
   nextZoneDamageAt?: number;
+  pickups: PickupState[];
+  nextPickupAt: number;
+  pickupSeq: number;
   lastSent?: Map<
     string,
     {
@@ -190,6 +307,8 @@ export interface RoomState {
       energy: number;
       inv: boolean;
       seq: number;
+      speed: number;
+      buffs: string;
     }
   >;
 }
@@ -234,6 +353,10 @@ export function createPlayerState(
     lastDamagedAt: -Infinity,
     invulnerableUntil: -Infinity,
     lastStandUsed: false,
+    shieldUntil: -Infinity,
+    rageUntil: -Infinity,
+    turboUntil: -Infinity,
+    baseSpeed: stats.speed,
     damageDealt: 0,
     distanceMoved: 0,
     viewLag: 0,
@@ -252,6 +375,10 @@ export function resetShotState(player: PlayerState): void {
   player.lastDamagedAt = -Infinity;
   player.invulnerableUntil = -Infinity;
   player.lastStandUsed = false;
+  player.shieldUntil = -Infinity;
+  player.rageUntil = -Infinity;
+  player.turboUntil = -Infinity;
+  player.speed = player.baseSpeed;
   player.viewLag = 0;
   player.history = [];
 }
@@ -338,7 +465,7 @@ export function applyInput(
       y: player.y + sin * muzzleOffset,
       vx: cos * player.primaryBulletSpeed,
       vy: sin * player.primaryBulletSpeed,
-      damage: player.primaryDamage,
+      damage: player.primaryDamage * damageMult(player, now),
       radius: GAME_CONFIG.BULLET_RADIUS,
       type: "normal",
       sprite: player.bulletSprite,
@@ -365,7 +492,7 @@ export function applyInput(
       y: player.y + sin * specialMuzzle,
       vx: cos * GAME_CONFIG.BULLET_SPECIAL_SPEED,
       vy: sin * GAME_CONFIG.BULLET_SPECIAL_SPEED,
-      damage: player.specialDamage,
+      damage: player.specialDamage * damageMult(player, now),
       radius: GAME_CONFIG.BULLET_RADIUS * 2,
       type: "special",
       sprite: player.bulletSpriteSecondary,

@@ -27,6 +27,18 @@ import { api } from '$lib/api';
 import { findItem, itemFrameUrls, type ItemImageRef } from '$lib/itemImages';
 import type { Socket } from 'socket.io-client';
 import * as sfx from './sfx';
+import { EMOTES } from '$lib/shared/emotes';
+
+// Power-ups: colour and icon, and the label shown over the ship that takes one
+const PICKUP_LOOK: Record<string, { color: number; icon: string; label: string }> = {
+	shield: { color: 0x4dd9ff, icon: '🛡️', label: 'Bouclier !' },
+	heal: { color: 0x44ff88, icon: '❤️', label: '+40 PV' },
+	rage: { color: 0xff4d4d, icon: '🔥', label: 'Rage x2 !' },
+	turbo: { color: 0xffd23f, icon: '⚡', label: 'Turbo !' }
+};
+const PICKUP_RADIUS = 16;
+const EMOTE_MS = 2500;
+const EMOTE_COOLDOWN_MS = 1500;
 
 // Remote entities are rendered this far in the past so there are always two snapshots to blend
 const INTERP_DELAY_MS = 100;
@@ -104,8 +116,17 @@ interface PlayerDelta {
 	hp?: number;
 	energy?: number;
 	inv?: boolean;
+	speed?: number;
+	// Active timed bonuses, comma-separated
+	buffs?: string;
 	lastProcessedSeq?: number;
 	inputClock?: number;
+}
+export interface PickupPayload {
+	id: string;
+	type: string;
+	x: number;
+	y: number;
 }
 interface BulletPayload {
 	id: string;
@@ -125,6 +146,8 @@ export interface GameStatePayload {
 	bulletsRemoved: string[];
 	// Ships the closing zone damaged this tick
 	zoneHits?: string[];
+	pickupsAdded?: PickupPayload[];
+	pickupsTaken?: { id: string; by: string; type: string }[];
 	t: number;
 }
 interface StartPlayer extends PlayerState {
@@ -180,6 +203,10 @@ interface PlayerVisual {
 	thrustAcc: number;
 	baseTint: number;
 	flashUntil: number;
+	// Drawn under the ship for the active timed bonuses
+	aura: Graphics;
+	buffs: string;
+	emote: { bubble: Container; until: number } | null;
 }
 
 interface BulletVisual {
@@ -235,6 +262,8 @@ export class GameEngine {
 	private shipFrameUrls = new Map<string, string[]>();
 	private bulletImageUrls = new Map<string, string>();
 	private bulletVisuals = new Map<string, BulletVisual>();
+	private pickupVisuals = new Map<string, Container>();
+	private lastEmoteAt = 0;
 	private socket: Socket;
 	private myId: string;
 	private isSpectator: boolean;
@@ -270,6 +299,12 @@ export class GameEngine {
 		// Typing in a field (volume slider, future chat) must not steer the ship
 		if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
 		const key = e.key.toLowerCase();
+		// Number keys send an emote instead of steering
+		const emote = Number(key) - 1;
+		if (Number.isInteger(emote) && emote >= 0 && emote < EMOTES.length) {
+			if (!e.repeat) this.sendEmote(emote);
+			return;
+		}
 		// Arrows and space would otherwise scroll the page or press the focused button
 		if (key in ARROW_KEYS || key === FIRE_KEY) e.preventDefault();
 		this.keys.add(key);
@@ -374,6 +409,8 @@ export class GameEngine {
 			this.starfield.update(dt);
 			this.renderPlayers(dt, renderTime);
 			this.renderBullets(renderTime);
+			this.renderPickups();
+			this.renderBuffs();
 			this.updateThrusterParticles(dt);
 			this.updateBlastParticles(dt);
 			this.updateShake(dt);
@@ -740,7 +777,18 @@ export class GameEngine {
 		gradeText.anchor.set(0.5, 1);
 		gradeText.y = -45;
 
-		container.addChild(hitbox, hpBg, hpBar, energyBg, energyBar, shipSprite, nameText, gradeText);
+		const aura = new Graphics();
+		container.addChild(
+			aura,
+			hitbox,
+			hpBg,
+			hpBar,
+			energyBg,
+			energyBar,
+			shipSprite,
+			nameText,
+			gradeText
+		);
 		container.x = p.x;
 		container.y = p.y;
 		shipSprite.rotation = p.angle + Math.PI / 2;
@@ -762,7 +810,10 @@ export class GameEngine {
 			baseTint: Number(shipSprite.tint),
 			flashUntil: 0,
 			isMoving: false,
-			thrustAcc: 0
+			thrustAcc: 0,
+			aura,
+			buffs: '',
+			emote: null
 		};
 		this.playerVisuals.set(p.id, visual);
 		this.updateBars(visual);
@@ -820,6 +871,12 @@ export class GameEngine {
 			}
 			if (p.energy !== undefined) visual.state.energy = p.energy;
 			if (p.inv !== undefined) visual.state.inv = p.inv;
+			if (p.buffs !== undefined) visual.buffs = p.buffs;
+			if (p.speed !== undefined) {
+				visual.state.speed = p.speed;
+				// Turbo: our own movement is predicted at the new speed straight away
+				if (this.isLocal(p.id)) this.predicted.speed = p.speed;
+			}
 			if (p.hp !== undefined || p.energy !== undefined) this.updateBars(visual);
 			if (this.isLocal(p.id) && p.lastProcessedSeq !== undefined) {
 				ackedSeq = p.lastProcessedSeq;
@@ -843,8 +900,121 @@ export class GameEngine {
 		}
 
 		for (const b of state.bulletsAdded) this.addServerBullet(b);
+		for (const p of state.pickupsAdded ?? []) this.addPickup(p);
+		for (const taken of state.pickupsTaken ?? []) this.takePickup(taken.id, taken.by, taken.type);
 
 		if (ackedSeq !== null) this.reconcile(ackedSeq, serverClock);
+	}
+
+	private addPickup(p: PickupPayload) {
+		if (this.pickupVisuals.has(p.id)) return;
+		const look = PICKUP_LOOK[p.type];
+		if (!look) return;
+		const container = new Container();
+		const glow = new Graphics()
+			.circle(0, 0, PICKUP_RADIUS + 6)
+			.fill({ color: look.color, alpha: 0.18 })
+			.circle(0, 0, PICKUP_RADIUS)
+			.fill({ color: 0x0a0f24, alpha: 0.85 })
+			.stroke({ width: 2, color: look.color });
+		const icon = new Text({ text: look.icon, style: new TextStyle({ fontSize: 16 }) });
+		icon.anchor.set(0.5);
+		container.addChild(glow, icon);
+		container.x = p.x;
+		container.y = p.y;
+		this.app.stage.addChild(container);
+		this.pickupVisuals.set(p.id, container);
+	}
+
+	private takePickup(id: string, by: string, type: string) {
+		const visual = this.pickupVisuals.get(id);
+		if (visual) {
+			this.spawnSparks(visual.x, visual.y, 10);
+			visual.destroy({ children: true });
+			this.pickupVisuals.delete(id);
+		}
+		const look = PICKUP_LOOK[type];
+		const player = this.playerVisuals.get(by);
+		if (!look || !player) return;
+		if (by === this.myId && !this.isSpectator) sfx.pickup();
+		this.showBubble(player, look.label, look.color);
+	}
+
+	private clearPickups() {
+		for (const visual of this.pickupVisuals.values()) visual.destroy({ children: true });
+		this.pickupVisuals.clear();
+	}
+
+	// Pickups bob and pulse so they catch the eye
+	private renderPickups() {
+		const t = performance.now() / 1000;
+		for (const visual of this.pickupVisuals.values()) {
+			visual.scale.set(1 + Math.sin(t * 5) * 0.08);
+			visual.rotation = Math.sin(t * 2) * 0.15;
+		}
+	}
+
+	sendEmote(index: number) {
+		if (this.isSpectator || index < 0 || index >= EMOTES.length) return;
+		const now = performance.now();
+		if (now - this.lastEmoteAt < EMOTE_COOLDOWN_MS) return;
+		this.lastEmoteAt = now;
+		this.socket.emit('game:emote', index);
+	}
+
+	onEmote(data: { id: string; emote: number }) {
+		const player = this.playerVisuals.get(data.id);
+		const text = EMOTES[data.emote];
+		if (!player || text === undefined) return;
+		this.showBubble(player, text, 0xffffff);
+	}
+
+	// Speech bubble above a ship, replacing the previous one
+	private showBubble(v: PlayerVisual, text: string, color: number) {
+		v.emote?.bubble.destroy({ children: true });
+		const label = new Text({
+			text,
+			style: new TextStyle({ fill: color, fontSize: 14, fontWeight: '700' })
+		});
+		label.anchor.set(0.5);
+		const w = label.width + 16;
+		const h = label.height + 8;
+		const bg = new Graphics()
+			.roundRect(-w / 2, -h / 2, w, h, 8)
+			.fill({ color: 0x0a0f24, alpha: 0.9 })
+			.stroke({ width: 1.5, color, alpha: 0.7 })
+			.poly([-5, h / 2, 5, h / 2, 0, h / 2 + 6])
+			.fill({ color: 0x0a0f24, alpha: 0.9 });
+		const bubble = new Container();
+		bubble.addChild(bg, label);
+		bubble.y = -72;
+		v.container.addChild(bubble);
+		v.emote = { bubble, until: performance.now() + EMOTE_MS };
+	}
+
+	// Rings under the ship for each active bonus, and the end of expired speech bubbles
+	private renderBuffs() {
+		const now = performance.now();
+		const pulse = 0.6 + Math.sin(now / 120) * 0.25;
+		for (const v of this.playerVisuals.values()) {
+			const g = v.aura.clear();
+			const radius = GAME_CONFIG.SHIP_RADIUS + 8;
+			if (v.buffs.includes('shield')) {
+				g.circle(0, 0, radius + 4)
+					.fill({ color: 0x4dd9ff, alpha: 0.12 })
+					.stroke({ width: 2.5, color: 0x4dd9ff, alpha: pulse });
+			}
+			if (v.buffs.includes('rage')) {
+				g.circle(0, 0, radius).stroke({ width: 3, color: 0xff4d4d, alpha: pulse });
+			}
+			if (v.buffs.includes('turbo')) {
+				g.circle(0, 0, radius - 5).stroke({ width: 2, color: 0xffd23f, alpha: pulse });
+			}
+			if (v.emote && now > v.emote.until) {
+				v.emote.bubble.destroy({ children: true });
+				v.emote = null;
+			}
+		}
 	}
 
 	private addServerBullet(b: BulletPayload) {
@@ -950,6 +1120,8 @@ export class GameEngine {
 		if (zone) this.setZone(zone);
 		for (const entry of this.bulletVisuals.values()) entry.visual.destroy();
 		this.bulletVisuals.clear();
+		this.clearPickups();
+		for (const v of this.playerVisuals.values()) v.buffs = '';
 		this.leftClick = false;
 		this.rightClick = false;
 		this.keys.clear();
