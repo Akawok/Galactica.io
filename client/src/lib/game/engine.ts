@@ -26,6 +26,7 @@ import { getGrade } from '$lib/shared/grades';
 import { api } from '$lib/api';
 import { findItem, itemFrameUrls, type ItemImageRef } from '$lib/itemImages';
 import type { Socket } from 'socket.io-client';
+import * as sfx from './sfx';
 
 // Remote entities are rendered this far in the past so there are always two snapshots to blend
 const INTERP_DELAY_MS = 100;
@@ -36,6 +37,29 @@ const MAX_STEPS_PER_FRAME = 4;
 // Fraction of a reconciliation error still visible after one 60fps frame
 const CORRECTION_DECAY = 0.85;
 const CORRECTION_SNAP_DISTANCE = 120;
+// A hit at least this strong (a missile) gets the heavy feedback
+const HEAVY_HIT_DAMAGE = 25;
+const HIT_FLASH_MS = 110;
+const HIT_FLASH_TINT = 0xff5050;
+const MAX_SHAKE = 18;
+const SHAKE_DECAY = 0.86;
+const RETICLE_COLOR = 0x4dd9ff;
+const RETICLE_LOCK_COLOR = 0xff4d4d;
+const MISSILE_READY_COLOR = 0xffa040;
+const HIT_MARKER_MS = 160;
+
+interface BlastParticle {
+	x: number;
+	y: number;
+	vx: number;
+	vy: number;
+	life: number;
+	maxLife: number;
+	size: number;
+	color: number;
+	// Shockwave rings grow instead of moving
+	ring: boolean;
+}
 
 interface ThrusterParticle {
 	x: number;
@@ -128,6 +152,8 @@ interface PlayerVisual {
 	displayAngle: number;
 	isMoving: boolean;
 	thrustAcc: number;
+	baseTint: number;
+	flashUntil: number;
 }
 
 interface BulletVisual {
@@ -184,6 +210,13 @@ export class GameEngine {
 
 	private thrusterParticles: ThrusterParticle[] = [];
 	private thrusterGfx!: Graphics;
+	private blastParticles: BlastParticle[] = [];
+	private blastGfx!: Graphics;
+	private shake = 0;
+	private reticle: Graphics | null = null;
+	private mouseOnCanvas = false;
+	private reticleSpin = 0;
+	private hitMarkerUntil = 0;
 
 	private keys = new Set<string>();
 	private mouseAngle = 0;
@@ -266,6 +299,8 @@ export class GameEngine {
 
 		this.thrusterGfx = new Graphics();
 		this.app.stage.addChild(this.thrusterGfx);
+		this.blastGfx = new Graphics();
+		this.app.stage.addChild(this.blastGfx);
 
 		this.setupHUD();
 
@@ -281,6 +316,9 @@ export class GameEngine {
 			this.renderPlayers(dt, renderTime);
 			this.renderBullets(renderTime);
 			this.updateThrusterParticles(dt);
+			this.updateBlastParticles(dt);
+			this.updateShake(dt);
+			this.drawReticle(dt);
 		});
 
 		return this;
@@ -303,7 +341,18 @@ export class GameEngine {
 		window.addEventListener('keyup', this.onKeyUp);
 		window.addEventListener('blur', this.onBlur);
 
+		// The system cursor is replaced by the reticle drawn in drawReticle. Pixi rewrites the
+		// canvas cursor on every pointer move from its own styles, so those must say 'none' too
+		const cursors = this.app.renderer.events.cursorStyles;
+		cursors.default = 'none';
+		cursors.pointer = 'none';
+		canvas.style.cursor = 'none';
+		this.reticle = new Graphics();
+		this.app.stage.addChild(this.reticle);
+		canvas.addEventListener('mouseleave', () => (this.mouseOnCanvas = false));
+
 		canvas.addEventListener('mousemove', (e) => {
+			this.mouseOnCanvas = true;
 			const rect = canvas.getBoundingClientRect();
 			this.mouseWorldX = (e.clientX - rect.left) / (rect.width / this.mapWidth);
 			this.mouseWorldY = (e.clientY - rect.top) / (rect.height / this.mapHeight);
@@ -398,6 +447,7 @@ export class GameEngine {
 		this.prevPredicted.y = this.predicted.y;
 		applyMovement(this.predicted, input, this.getBlockers());
 		if (dash) {
+			sfx.dash();
 			const dir = dashDirection(keys, this.predicted.angle);
 			this.spawnDashBurst(this.prevPredicted.x, this.prevPredicted.y, dir.x, dir.y);
 		}
@@ -451,6 +501,7 @@ export class GameEngine {
 				type: 'normal',
 				sprite: this.myLoadout.bulletSprite
 			});
+			sfx.shot();
 		}
 
 		const specialPressed = this.rightClick && !this.prevRightClick;
@@ -471,6 +522,7 @@ export class GameEngine {
 				type: 'special',
 				sprite: this.myLoadout.bulletSpriteSecondary
 			});
+			sfx.missile();
 		}
 		this.prevRightClick = this.rightClick;
 	}
@@ -637,6 +689,8 @@ export class GameEngine {
 			known: { x: p.x, y: p.y, angle: p.angle },
 			samples: [],
 			displayAngle: p.angle,
+			baseTint: Number(shipSprite.tint),
+			flashUntil: 0,
 			isMoving: false,
 			thrustAcc: 0
 		};
@@ -688,7 +742,11 @@ export class GameEngine {
 			if (p.x !== undefined) visual.known.x = p.x;
 			if (p.y !== undefined) visual.known.y = p.y;
 			if (p.angle !== undefined) visual.known.angle = p.angle;
-			if (p.hp !== undefined) visual.state.hp = p.hp;
+			if (p.hp !== undefined) {
+				const lost = visual.state.hp - p.hp;
+				visual.state.hp = p.hp;
+				if (lost > 0) this.onDamaged(p.id, visual, lost);
+			}
 			if (p.energy !== undefined) visual.state.energy = p.energy;
 			if (p.inv !== undefined) visual.state.inv = p.inv;
 			if (p.hp !== undefined || p.energy !== undefined) this.updateBars(visual);
@@ -730,6 +788,10 @@ export class GameEngine {
 				existing.confirmed = true;
 			}
 			return;
+		}
+		if (!own) {
+			if (b.type === 'special') sfx.missile(false);
+			else sfx.shot(false);
 		}
 		const visual = this.createBulletGraphic(b.type, b.sprite, Math.atan2(b.vy, b.vx));
 		visual.x = b.x;
@@ -829,6 +891,8 @@ export class GameEngine {
 		this.correction.y = 0;
 		this.stepAcc = 0;
 		this.paused = false;
+		this.shake = 0;
+		this.app.stage.position.set(0, 0);
 
 		if (players) {
 			for (const p of players) {
@@ -844,6 +908,8 @@ export class GameEngine {
 				visual.displayAngle = p.angle;
 				visual.sprite.rotation = p.angle + Math.PI / 2;
 				visual.isMoving = false;
+				visual.container.visible = true;
+				visual.flashUntil = 0;
 				this.setShipMoving(visual, false);
 				this.updateBars(visual);
 
@@ -899,8 +965,10 @@ export class GameEngine {
 		this.correction.x *= decay;
 		this.correction.y *= decay;
 
+		const now = performance.now();
 		for (const [id, v] of this.playerVisuals) {
 			v.container.alpha = v.state.inv ? 0.4 : 1;
+			v.sprite.tint = now < v.flashUntil ? HIT_FLASH_TINT : v.baseTint;
 			if (this.isLocal(id)) {
 				const alpha = Math.min(1, this.stepAcc / GAME_CONFIG.TICK_MS);
 				v.container.x =
@@ -920,6 +988,7 @@ export class GameEngine {
 			v.isMoving = moved > 0.3 * dt;
 			// A jump far beyond normal speed is a dash
 			if (moved > PERK_CONFIG.DASH_DISTANCE / 3) {
+				sfx.dash(false);
 				this.spawnDashBurst(
 					v.container.x,
 					v.container.y,
@@ -992,6 +1061,210 @@ export class GameEngine {
 				maxLife: 12 + Math.random() * 8,
 				size: 2.5 + Math.random() * 2.5
 			});
+		}
+	}
+
+	private onDamaged(id: string, v: PlayerVisual, amount: number) {
+		const heavy = amount >= HEAVY_HIT_DAMAGE;
+		v.flashUntil = performance.now() + HIT_FLASH_MS;
+		this.spawnSparks(v.container.x, v.container.y, heavy ? 14 : 6);
+		const mine = id === this.myId && !this.isSpectator;
+		if (mine) {
+			sfx.hurt(heavy);
+			this.addShake(heavy ? 9 : 4);
+		} else if (!this.isSpectator) {
+			// Duels are one on one: damage on the other ship comes from us
+			sfx.hitConfirm();
+			this.hitMarkerUntil = performance.now() + HIT_MARKER_MS;
+		}
+		if (v.state.hp <= 0) {
+			v.container.visible = false;
+			this.spawnBlast(v.container.x, v.container.y);
+			sfx.explosion();
+			this.addShake(mine ? MAX_SHAKE : 10);
+		}
+	}
+
+	private isAimingAtEnemy(): boolean {
+		const reach = GAME_CONFIG.SHIP_RADIUS + 8;
+		for (const [id, v] of this.playerVisuals) {
+			if (id === this.myId || !v.container.visible) continue;
+			if (Math.hypot(this.mouseWorldX - v.container.x, this.mouseWorldY - v.container.y) < reach)
+				return true;
+		}
+		return false;
+	}
+
+	// 0..1 while the missile reloads, 1 once it can be fired again
+	private missileReadiness(): { progress: number; ready: boolean } {
+		const elapsed = this.inputSeq - this.roundBaseSeq - this.lastSpecialShotClock;
+		const progress = Math.min(1, elapsed / cooldownTicks(this.myLoadout.specialCooldown));
+		const ready = progress >= 1 && this.predictedEnergy() >= this.myLoadout.specialEnergyCost;
+		return { progress, ready };
+	}
+
+	private drawReticle(dt: number) {
+		const g = this.reticle;
+		if (!g) return;
+		g.clear();
+		if (!this.mouseOnCanvas) return;
+		// Always drawn last, above effects re-added on top of the stage
+		if (this.app.stage.children[this.app.stage.children.length - 1] !== g) this.app.stage.addChild(g);
+		// The stage shakes, the reticle must stay under the real mouse
+		g.position.set(this.mouseWorldX - this.app.stage.x, this.mouseWorldY - this.app.stage.y);
+
+		const lock = this.isAimingAtEnemy();
+		const color = lock ? RETICLE_LOCK_COLOR : RETICLE_COLOR;
+		this.reticleSpin += dt * (lock ? 0.09 : 0.015);
+
+		g.circle(0, 0, 1.8).fill({ color });
+
+		// Segmented inner ring
+		for (let i = 0; i < 4; i++) {
+			const start = this.reticleSpin + (i * Math.PI) / 2 + 0.3;
+			const end = start + Math.PI / 2 - 0.6;
+			g.moveTo(Math.cos(start) * 10, Math.sin(start) * 10)
+				.arc(0, 0, 10, start, end)
+				.stroke({ width: 1.5, color, alpha: 0.9 });
+		}
+
+		// Fixed cross ticks
+		for (let i = 0; i < 4; i++) {
+			const a = (i * Math.PI) / 2;
+			g.moveTo(Math.cos(a) * 14, Math.sin(a) * 14)
+				.lineTo(Math.cos(a) * 20, Math.sin(a) * 20)
+				.stroke({ width: 1.5, color, alpha: 0.8 });
+		}
+
+		// Corner brackets that close in on a locked target
+		const r = lock ? 15 : 24;
+		const len = 6;
+		for (const [sx, sy] of [
+			[-1, -1],
+			[1, -1],
+			[1, 1],
+			[-1, 1]
+		]) {
+			g.moveTo(sx * r, sy * (r - len))
+				.lineTo(sx * r, sy * r)
+				.lineTo(sx * (r - len), sy * r)
+				.stroke({ width: 2, color, alpha: lock ? 1 : 0.55 });
+		}
+
+		// Missile gauge along the bottom
+		const { progress, ready } = this.missileReadiness();
+		const from = Math.PI * 0.3;
+		const span = Math.PI * 0.4;
+		g.moveTo(Math.cos(from) * 28, Math.sin(from) * 28)
+			.arc(0, 0, 28, from, from + span)
+			.stroke({ width: 2, color: 0xffffff, alpha: 0.15 });
+		if (progress > 0) {
+			g.moveTo(Math.cos(from) * 28, Math.sin(from) * 28)
+				.arc(0, 0, 28, from, from + span * progress)
+				.stroke({ width: 2, color: ready ? MISSILE_READY_COLOR : 0x8890b0, alpha: ready ? 1 : 0.7 });
+		}
+
+		if (performance.now() < this.hitMarkerUntil) {
+			for (let i = 0; i < 4; i++) {
+				const a = Math.PI / 4 + (i * Math.PI) / 2;
+				g.moveTo(Math.cos(a) * 5, Math.sin(a) * 5)
+					.lineTo(Math.cos(a) * 11, Math.sin(a) * 11)
+					.stroke({ width: 2.5, color: 0xffffff });
+			}
+		}
+	}
+
+	private addShake(amount: number) {
+		this.shake = Math.min(MAX_SHAKE, Math.max(this.shake, amount));
+	}
+
+	private updateShake(dt: number) {
+		if (this.shake < 0.2) {
+			if (this.shake !== 0) {
+				this.shake = 0;
+				this.app.stage.position.set(0, 0);
+			}
+			return;
+		}
+		this.app.stage.position.set(
+			(Math.random() * 2 - 1) * this.shake,
+			(Math.random() * 2 - 1) * this.shake
+		);
+		this.shake *= Math.pow(SHAKE_DECAY, dt);
+	}
+
+	private spawnSparks(x: number, y: number, count: number) {
+		for (let i = 0; i < count; i++) {
+			const angle = Math.random() * Math.PI * 2;
+			const speed = 2 + Math.random() * 4;
+			this.blastParticles.push({
+				x,
+				y,
+				vx: Math.cos(angle) * speed,
+				vy: Math.sin(angle) * speed,
+				life: 0,
+				maxLife: 10 + Math.random() * 10,
+				size: 1.5 + Math.random() * 2,
+				color: Math.random() < 0.5 ? 0xffffff : 0xffd27a,
+				ring: false
+			});
+		}
+		// Re-adding keeps the effects drawn above the ships
+		this.app.stage.addChild(this.blastGfx);
+	}
+
+	private spawnBlast(x: number, y: number) {
+		const colors = [0xffffff, 0xffe08a, 0xff9933, 0xff4d1a];
+		for (let i = 0; i < 60; i++) {
+			const angle = Math.random() * Math.PI * 2;
+			const speed = 1 + Math.random() * 7;
+			this.blastParticles.push({
+				x,
+				y,
+				vx: Math.cos(angle) * speed,
+				vy: Math.sin(angle) * speed,
+				life: 0,
+				maxLife: 30 + Math.random() * 35,
+				size: 2 + Math.random() * 5,
+				color: colors[Math.floor(Math.random() * colors.length)],
+				ring: false
+			});
+		}
+		this.blastParticles.push({
+			x,
+			y,
+			vx: 0,
+			vy: 0,
+			life: 0,
+			maxLife: 28,
+			size: 90,
+			color: 0xffc266,
+			ring: true
+		});
+		this.app.stage.addChild(this.blastGfx);
+	}
+
+	private updateBlastParticles(dt: number) {
+		const gfx = this.blastGfx;
+		gfx.clear();
+		const damping = Math.pow(0.93, dt);
+		for (let i = this.blastParticles.length - 1; i >= 0; i--) {
+			const p = this.blastParticles[i];
+			p.life += dt;
+			if (p.life >= p.maxLife) {
+				this.blastParticles.splice(i, 1);
+				continue;
+			}
+			const t = p.life / p.maxLife;
+			if (p.ring) {
+				gfx.circle(p.x, p.y, p.size * t).stroke({ width: 4 * (1 - t) + 1, color: p.color, alpha: 1 - t });
+				continue;
+			}
+			p.x += p.vx * dt;
+			p.y += p.vy * dt;
+			p.vx *= damping;
+			p.vy *= damping;
+			gfx.circle(p.x, p.y, p.size * (1 - t * 0.6)).fill({ color: p.color, alpha: 1 - t });
 		}
 	}
 

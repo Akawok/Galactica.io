@@ -1,6 +1,11 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import Gem from '@lucide/svelte/icons/gem';
+	import Volume2 from '@lucide/svelte/icons/volume-2';
+	import VolumeX from '@lucide/svelte/icons/volume-x';
+	import Music from '@lucide/svelte/icons/music';
+	import * as sfx from '$lib/game/sfx';
+	import { getMusicVolume, setMusicVolume, startMusic, stopMusic } from '$lib/game/music';
 	import { goto } from '$app/navigation';
 	import { currentUser, auth } from '$lib/stores/auth';
 	import { getSocket } from '$lib/stores/socket';
@@ -47,12 +52,40 @@
 	// 'asked': this player wants a rematch; 'offered': the opponent asked for one
 	let rematch = $state<'none' | 'asked' | 'offered' | 'cancelled'>('none');
 	let rematchFrom = $state<string | null>(null);
+	let volume = $state(sfx.getVolume());
+	// Restored when unmuting
+	let lastVolume = sfx.getVolume() || 0.6;
+
+	function changeVolume(v: number) {
+		volume = v;
+		if (v > 0) lastVolume = v;
+		sfx.setVolume(v);
+	}
+
+	let musicId = 0;
+	let musicVolume = $state(getMusicVolume());
+	let lastMusicVolume = getMusicVolume() || 0.35;
+
+	function changeMusicVolume(v: number) {
+		musicVolume = v;
+		if (v > 0) lastMusicVolume = v;
+		setMusicVolume(v);
+	}
 	let abandonResult = $state<{ deserter: string; creditsRecovered: number } | null>(null);
 	let closedReason = $state<string | null>(null);
 
 	let { roomId, isSpectator }: { roomId: string; isSpectator: boolean } = $props();
 	let destroyed = false;
 	let roundTimer: ReturnType<typeof setTimeout> | null = null;
+	// The round ends on the killing blow: its result waits for the explosion to play out
+	const KILL_SHOWCASE_MS = 1400;
+	let killAt = 0;
+	let revealTimer: ReturnType<typeof setTimeout> | null = null;
+
+	function afterKill(reveal: () => void) {
+		if (revealTimer) clearTimeout(revealTimer);
+		revealTimer = setTimeout(reveal, Math.max(0, killAt + KILL_SHOWCASE_MS - performance.now()));
+	}
 	// game:start can arrive while Pixi is still loading, it is replayed once the engine is ready
 	let pendingStart: GameStartPayload | null = null;
 
@@ -90,7 +123,11 @@
 			'game:roundEnd',
 			(data: { winner: { username: string } | null; scores: Record<string, number> }) => {
 				status = 'roundEnd';
-				roundResult = { winner: data.winner?.username ?? null, scores: data.scores };
+				killAt = performance.now();
+				const result = { winner: data.winner?.username ?? null, scores: data.scores };
+				afterKill(() => {
+					if (status === 'roundEnd') roundResult = result;
+				});
 				engine?.pause();
 				engine?.updateScores(data.scores);
 				if (roundTimer) clearTimeout(roundTimer);
@@ -109,6 +146,7 @@
 				scores: Record<string, number>;
 				players: { id: string; x: number; y: number; angle: number; hp: number; energy: number }[];
 			}) => {
+				if (revealTimer) clearTimeout(revealTimer);
 				engine?.resetRound(data.players);
 				status = 'playing';
 				roundResult = null;
@@ -131,7 +169,7 @@
 				training?: boolean;
 			}) => {
 				status = 'matchEnd';
-				matchResult = {
+				const result = {
 					training: data.training ?? false,
 					winner: data.winner.username,
 					pointsEarned: data.pointsEarned,
@@ -141,6 +179,13 @@
 					galacticsGained: data.galacticsGained ?? 0,
 					rewardNotes: data.rewardNotes ?? []
 				};
+				afterKill(() => {
+					matchResult = result;
+					stopMusic(musicId, 1.5);
+					if (isSpectator) return;
+					if (result.winner === $currentUser?.username) sfx.victory();
+					else sfx.defeat();
+				});
 				// A spectator's payload carries no rewards, and absent fields must not wipe the profile
 				if (isSpectator) return;
 				const updates: { points?: number; xp?: number; level?: number; galactics?: number } = {};
@@ -156,6 +201,7 @@
 			'game:abandoned',
 			(data: { deserter: string; creditsRecovered: number; newPoints: number | null }) => {
 				status = 'matchEnd';
+				if (revealTimer) clearTimeout(revealTimer);
 				matchResult = null;
 				abandonResult = {
 					deserter: data.deserter,
@@ -169,6 +215,7 @@
 
 		listen('game:closed', (data: { reason?: string }) => {
 			status = 'matchEnd';
+			if (revealTimer) clearTimeout(revealTimer);
 			matchResult = null;
 			abandonResult = null;
 			engine?.pause();
@@ -199,6 +246,8 @@
 			rematchFrom = null;
 		});
 
+		musicId = startMusic();
+
 		const { GameEngine } = await import('$lib/game/engine');
 		if (destroyed) return;
 		const instance = new GameEngine(socket, socket.id!, isSpectator);
@@ -218,6 +267,8 @@
 	onDestroy(() => {
 		destroyed = true;
 		if (roundTimer) clearTimeout(roundTimer);
+		if (revealTimer) clearTimeout(revealTimer);
+		stopMusic(musicId);
 		engine?.destroy();
 		const socket = getSocket();
 		if (status === 'playing' || status === 'roundEnd' || status === 'waiting') {
@@ -262,7 +313,7 @@
 						<span>{score}</span>
 					{/each}
 				</div>
-				<p class="next-round">Prochaine manche dans 3s…</p>
+				<p class="next-round">Prochaine manche…</p>
 			</div>
 		</div>
 	{/if}
@@ -371,6 +422,46 @@
 	{#if isSpectator}
 		<div class="spectator-badge">👁 Spectateur</div>
 	{/if}
+
+	<div class="volume">
+		<div class="volume-row">
+			<button
+				class="volume-toggle"
+				aria-label={volume > 0 ? 'Couper les effets' : 'Remettre les effets'}
+				onclick={() => changeVolume(volume > 0 ? 0 : lastVolume)}
+			>
+				{#if volume > 0}<Volume2 size={16} />{:else}<VolumeX size={16} />{/if}
+			</button>
+			<input
+				type="range"
+				min="0"
+				max="1"
+				step="0.05"
+				value={volume}
+				aria-label="Volume des effets"
+				oninput={(e) => changeVolume(Number(e.currentTarget.value))}
+			/>
+		</div>
+		<div class="volume-row">
+			<button
+				class="volume-toggle"
+				class:muted={musicVolume === 0}
+				aria-label={musicVolume > 0 ? 'Couper la musique' : 'Remettre la musique'}
+				onclick={() => changeMusicVolume(musicVolume > 0 ? 0 : lastMusicVolume)}
+			>
+				<Music size={16} />
+			</button>
+			<input
+				type="range"
+				min="0"
+				max="1"
+				step="0.05"
+				value={musicVolume}
+				aria-label="Volume de la musique"
+				oninput={(e) => changeMusicVolume(Number(e.currentTarget.value))}
+			/>
+		</div>
+	</div>
 </div>
 
 <style>
@@ -538,6 +629,39 @@
 		flex-shrink: 0;
 	}
 
+	.volume {
+		position: absolute;
+		top: 12px;
+		right: 12px;
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+		background: rgba(0, 0, 0, 0.55);
+		border: 1px solid rgba(100, 100, 255, 0.25);
+		border-radius: 12px;
+		padding: 0.35rem 0.6rem;
+		z-index: 5;
+	}
+	.volume-row {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+	}
+	.volume-toggle.muted {
+		opacity: 0.4;
+	}
+	.volume-toggle {
+		display: inline-flex;
+		background: none;
+		border: none;
+		color: #a0a8ff;
+		cursor: pointer;
+		padding: 0;
+	}
+	.volume input {
+		width: 80px;
+		accent-color: #4dd9ff;
+	}
 	.spectator-badge {
 		position: absolute;
 		top: 12px;
