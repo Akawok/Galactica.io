@@ -135,15 +135,20 @@
 							<span class="a-tag {r.status === 'waiting' ? 'muted' : 'ok'}">
 								{ROOM_STATUS_LABEL[r.status]}
 							</span>
+							{#if r.training}<span class="a-tag muted">Entraînement</span>{/if}
 							<span class="a-muted">{since(r.createdAt)}</span>
 							{#if r.spectatorCount}
 								<span class="a-muted">· {r.spectatorCount} spectateur{r.spectatorCount > 1 ? 's' : ''}</span>
 							{/if}
 						</div>
 						<div class="fighters">
-							{#each r.players as p, i (p.userId)}
+							{#each r.players as p, i (p.userId ?? 'bot')}
 								{#if i > 0}<span class="vs">vs</span>{/if}
-								<button class="a-link" onclick={() => onOpenPlayer(p.userId)}>{p.username}</button>
+								{#if p.userId}
+									<button class="a-link" onclick={() => onOpenPlayer(p.userId!)}>{p.username}</button>
+								{:else}
+									<span>{p.username}</span>
+								{/if}
 								<span class="a-muted">niv. {p.level}</span>
 								{#if r.status !== 'waiting'}<span class="score">{p.score}</span>{/if}
 							{/each}

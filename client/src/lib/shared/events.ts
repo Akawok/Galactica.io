@@ -1,5 +1,10 @@
 export const GAME_EVENT = {
 	CREATE: 'game:create',
+	TRAINING: 'game:training',
+	QUICKPLAY: 'game:quickplay',
+	REMATCH: 'game:rematch',
+	REMATCH_OFFERED: 'game:rematchOffered',
+	REMATCH_CANCELLED: 'game:rematchCancelled',
 	CANCEL: 'game:cancel',
 	JOIN: 'game:join',
 	SPECTATE: 'game:spectate',

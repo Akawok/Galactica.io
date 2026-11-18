@@ -63,10 +63,7 @@
 	const user = $derived(detail?.user);
 	const isSelf = $derived(user?.id === $currentUser?.id);
 	const canModerate = $derived(
-		!!user &&
-			!isSelf &&
-			user.role !== 'admin' &&
-			(isAdmin || user.role === 'user')
+		!!user && !isSelf && user.role !== 'admin' && (isAdmin || user.role === 'user')
 	);
 	const banned = $derived(isActive(user?.bannedUntil));
 	const muted = $derived(isActive(user?.mutedUntil));
@@ -175,8 +172,11 @@
 				{user.username}
 			</h2>
 			<div class="tags">
-				<span class="a-tag {user.role === 'user' ? 'muted' : 'staff'}">{ROLE_LABEL[user.role]}</span>
-				<span class="a-tag info" style="color: {grade.color}">{grade.label} · niv. {user.level}</span>
+				<span class="a-tag {user.role === 'user' ? 'muted' : 'staff'}">{ROLE_LABEL[user.role]}</span
+				>
+				<span class="a-tag info" style="color: {grade.color}"
+					>{grade.label} · niv. {user.level}</span
+				>
 				{#if detail.live}
 					<span class="a-tag ok">
 						{PLAYER_STATUS_LABEL[detail.live.status]}{detail.live.roomId
@@ -201,10 +201,19 @@
 						</dd>
 					</div>
 				{/if}
-				<div><dt>Inscrit le</dt><dd>{formatDate(user.createdAt)}</dd></div>
-				<div><dt>Identifiant</dt><dd class="mono">{user.id}</dd></div>
+				<div>
+					<dt>Inscrit le</dt>
+					<dd>{formatDate(user.createdAt)}</dd>
+				</div>
+				<div>
+					<dt>Identifiant</dt>
+					<dd class="mono">{user.id}</dd>
+				</div>
 				{#if banned && user.banReason}
-					<div><dt>Motif du ban</dt><dd>{user.banReason}</dd></div>
+					<div>
+						<dt>Motif du ban</dt>
+						<dd>{user.banReason}</dd>
+					</div>
 				{/if}
 			</dl>
 		</header>
@@ -240,9 +249,14 @@
 				{:else}
 					<div class="ban-form">
 						<select bind:value={banMinutes} aria-label="Durée du ban">
-							{#each BAN_DURATIONS as d (d.minutes)}<option value={d.minutes}>{d.label}</option>{/each}
+							{#each BAN_DURATIONS as d (d.minutes)}<option value={d.minutes}>{d.label}</option
+								>{/each}
 						</select>
-						<input bind:value={banReason} maxlength="200" placeholder="Motif (visible dans le journal)" />
+						<input
+							bind:value={banReason}
+							maxlength="200"
+							placeholder="Motif (visible dans le journal)"
+						/>
 						<button class="btn btn-danger btn-sm" disabled={busy} onclick={ban}>Bannir</button>
 					</div>
 				{/if}
@@ -276,8 +290,8 @@
 						<button
 							class="btn btn-secondary btn-sm"
 							disabled={busy || !newName.trim() || newName.trim() === user.username}
-							onclick={() =>
-								run(() => api.admin.rename(userId, newName.trim()), 'Pseudo modifié.')}>Renommer</button
+							onclick={() => run(() => api.admin.rename(userId, newName.trim()), 'Pseudo modifié.')}
+							>Renommer</button
 						>
 					</div>
 				</div>
@@ -288,7 +302,8 @@
 						<button
 							class="btn btn-secondary btn-sm"
 							disabled={busy}
-							onclick={() => run(() => api.admin.kick(userId), 'Joueur déconnecté.')}>Déconnecter</button
+							onclick={() => run(() => api.admin.kick(userId), 'Joueur déconnecté.')}
+							>Déconnecter</button
 						>
 					</div>
 				{/if}
@@ -318,22 +333,39 @@
 								class="btn btn-secondary btn-sm"
 								disabled={busy || newRole === user.role}
 								onclick={() =>
-									run(() => api.admin.setRole(userId, newRole), `Rôle changé en ${ROLE_LABEL[newRole]}.`)}
-								>Appliquer</button
+									run(
+										() => api.admin.setRole(userId, newRole),
+										`Rôle changé en ${ROLE_LABEL[newRole]}.`
+									)}>Appliquer</button
 							>
 						</div>
 					</div>
 				{/if}
 
 				<div class="res-grid">
-					<label class="a-field"><span>Crédits</span><input type="number" min="0" bind:value={res.points} /></label>
-					<label class="a-field"><span>Galactics</span><input type="number" min="0" bind:value={res.galactics} /></label>
-					<label class="a-field"><span>Niveau</span><input type="number" min="1" max={MAX_LEVEL} bind:value={res.level} /></label>
-					<label class="a-field"><span>XP du niveau</span><input type="number" min="0" bind:value={res.xp} /></label>
+					<label class="a-field"
+						><span>Crédits</span><input type="number" min="0" bind:value={res.points} /></label
+					>
+					<label class="a-field"
+						><span>Galactics</span><input type="number" min="0" bind:value={res.galactics} /></label
+					>
+					<label class="a-field"
+						><span>Niveau</span><input
+							type="number"
+							min="1"
+							max={MAX_LEVEL}
+							bind:value={res.level}
+						/></label
+					>
+					<label class="a-field"
+						><span>XP du niveau</span><input type="number" min="0" bind:value={res.xp} /></label
+					>
 				</div>
 				<div class="line">
 					<span class="a-muted">Baisser le niveau peut remettre ses caractéristiques à zéro.</span>
-					<button class="btn btn-secondary btn-sm" disabled={busy} onclick={saveResources}>Enregistrer</button>
+					<button class="btn btn-secondary btn-sm" disabled={busy} onclick={saveResources}
+						>Enregistrer</button
+					>
 				</div>
 
 				<div class="actions">
@@ -341,14 +373,17 @@
 						class="btn btn-secondary btn-sm"
 						disabled={busy}
 						onclick={() =>
-							run(() => api.admin.resetAttributes(userId), 'Caractéristiques remises à zéro, sans frais.')}
-						>Remettre les caractéristiques à zéro</button
+							run(
+								() => api.admin.resetAttributes(userId),
+								'Caractéristiques remises à zéro, sans frais.'
+							)}>Remettre les caractéristiques à zéro</button
 					>
 					{#if !user.emailVerified}
 						<button
 							class="btn btn-secondary btn-sm"
 							disabled={busy}
-							onclick={() => run(() => api.admin.verifyEmail(userId), 'Email marqué comme confirmé.')}
+							onclick={() =>
+								run(() => api.admin.verifyEmail(userId), 'Email marqué comme confirmé.')}
 							>Valider l'email</button
 						>
 					{/if}
@@ -356,8 +391,10 @@
 						class="btn btn-secondary btn-sm"
 						disabled={busy}
 						onclick={() =>
-							run(() => api.admin.sendReset(userId), 'Lien de nouveau mot de passe envoyé par email.')}
-						>Envoyer un lien de mot de passe</button
+							run(
+								() => api.admin.sendReset(userId),
+								'Lien de nouveau mot de passe envoyé par email.'
+							)}>Envoyer un lien de mot de passe</button
 					>
 				</div>
 			</div>
@@ -375,7 +412,10 @@
 					</div>
 				{/each}
 			</div>
-			<p class="a-muted">{user.attributePoints} point{user.attributePoints > 1 ? 's' : ''} à son niveau · {user.respecCount} réinitialisation{user.respecCount > 1 ? 's' : ''}</p>
+			<p class="a-muted">
+				{user.attributePoints} point{user.attributePoints > 1 ? 's' : ''} à son niveau · {user.respecCount}
+				réinitialisation{user.respecCount > 1 ? 's' : ''}
+			</p>
 		</div>
 
 		<div class="block">

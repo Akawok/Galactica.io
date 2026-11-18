@@ -266,7 +266,9 @@ export interface ResourceChanges {
 export interface LiveRoom {
 	roomId: string;
 	status: 'waiting' | 'playing' | 'roundEnd' | 'matchEnd';
-	players: { userId: string; username: string; level: number; score: number }[];
+	training: boolean;
+	// userId is null for the training bot
+	players: { userId: string | null; username: string; level: number; score: number }[];
 	spectatorCount: number;
 	createdAt: number | null;
 }

@@ -12,6 +12,12 @@ import {
 import { ChatMessage } from "../models/ChatMessage.js";
 import { User, isMuted } from "../models/User.js";
 import { recordDesertion, saveGameRecord } from "../services/match.service.js";
+import {
+  BOT_DIFFICULTIES,
+  type BotDifficulty,
+  botShipFor,
+  botStats,
+} from "../services/bot.service.js";
 import { sanitizeChatMessage } from "../services/identity.service.js";
 import {
   disconnectUserSockets,
@@ -36,11 +42,16 @@ interface ConnectedPlayer {
 const CHAT_MIN_INTERVAL_MS = 750;
 const MAX_ROOMS_PER_USER = 1;
 const MAX_TOTAL_ROOMS = 500;
+// Counted apart from duels so practice games can never block real matches
+const MAX_TRAINING_ROOMS = 100;
 
 const EVENT_LIMITS: Record<string, { max: number; windowMs: number }> = {
   "user:join": { max: 5, windowMs: 10_000 },
   "user:updateLoadout": { max: 10, windowMs: 10_000 },
   "game:create": { max: 10, windowMs: 60_000 },
+  "game:quickplay": { max: 10, windowMs: 60_000 },
+  "game:rematch": { max: 20, windowMs: 60_000 },
+  "game:training": { max: 10, windowMs: 60_000 },
   "game:cancel": { max: 20, windowMs: 60_000 },
   "game:join": { max: 20, windowMs: 60_000 },
   "game:spectate": { max: 20, windowMs: 60_000 },
@@ -105,6 +116,11 @@ function roomsOwnedBy(userId: string): number {
   return count;
 }
 
+// Training rooms hold a single real player: nobody can join or watch them
+function publicRooms(): RoomState[] {
+  return Array.from(rooms.values()).filter((r) => !r.training);
+}
+
 let pendingBroadcast: NodeJS.Immediate | null = null;
 function broadcastLobbyState(io: Server) {
   if (pendingBroadcast) return;
@@ -124,7 +140,7 @@ function doBroadcastLobbyState(io: Server) {
     }),
   );
 
-  const roomList = Array.from(rooms.values()).map((r) => {
+  const roomList = publicRooms().map((r) => {
     const waitingUsernames = (r.waitingPlayers ?? [])
       .map((id) => connectedPlayers.get(id)?.username)
       .filter(Boolean) as string[];
@@ -154,6 +170,218 @@ function generateRoomId(): string {
     if (!rooms.has(id)) return id;
   }
   return randomBytes(8).toString("hex").toUpperCase();
+}
+
+// Puts the given players in a new waiting room; a disconnect before the match starts cancels it
+function openRoom(
+  io: Server,
+  members: ConnectedPlayer[],
+  opts: { training?: boolean } = {},
+): RoomState {
+  const roomId = generateRoomId();
+  const room: RoomState = {
+    roomId,
+    players: new Map(),
+    bullets: [],
+    scores: new Map(),
+    spectators: new Set(),
+    status: "waiting",
+    roundStartTime: 0,
+    ownerUserId: members[0].userId,
+    playerUserIds: new Set(members.map((m) => m.userId)),
+    createdAt: Date.now(),
+    waitingPlayers: members.map((m) => m.socketId),
+    training: opts.training,
+  };
+  rooms.set(roomId, room);
+  for (const member of members) {
+    io.sockets.sockets.get(member.socketId)?.join(roomId);
+    member.status = "in-game";
+    member.currentRoomId = roomId;
+  }
+  return room;
+}
+
+function createDuelRoom(io: Server, socket: Socket, player: ConnectedPlayer) {
+  if (publicRooms().length >= MAX_TOTAL_ROOMS) {
+    socket.emit("game:error", { message: "Serveur saturé, réessaie plus tard" });
+    return;
+  }
+  if (roomsOwnedBy(player.userId) >= MAX_ROOMS_PER_USER) {
+    socket.emit("game:error", { message: "Tu as déjà une partie en attente" });
+    return;
+  }
+  const { roomId } = openRoom(io, [player]);
+  socket.emit("game:created", { roomId });
+  broadcastLobbyState(io);
+}
+
+async function joinDuelRoom(
+  io: Server,
+  socket: Socket,
+  player: ConnectedPlayer,
+  room: RoomState,
+) {
+  const { roomId } = room;
+  const waitingPlayers = room.waitingPlayers ?? [];
+  if (room.status !== "waiting" || waitingPlayers.length >= 2) return;
+
+  if (room.playerUserIds?.has(player.userId)) {
+    socket.emit("game:error", {
+      message: "Tu ne peux pas rejoindre ta propre partie",
+    });
+    return;
+  }
+
+  waitingPlayers.push(socket.id);
+  room.playerUserIds?.add(player.userId);
+  room.waitingPlayers = waitingPlayers;
+  socket.join(roomId);
+  player.status = "in-game";
+  player.currentRoomId = roomId;
+
+  const abortJoin = (message: string) => {
+    socket.emit("game:error", { message });
+    // The creator would otherwise keep waiting on a room that no longer exists
+    socket.to(roomId).emit("game:cancelled", { roomId });
+    teardownRoom(io, room);
+  };
+
+  const player1SocketId = waitingPlayers[0];
+  const player1Socket = io.sockets.sockets.get(player1SocketId);
+  const player1 = connectedPlayers.get(player1SocketId);
+
+  if (!player1Socket || !player1) {
+    abortJoin("Le créateur de la partie s'est déconnecté");
+    return;
+  }
+
+  let profile1, profile2;
+  try {
+    [profile1, profile2] = await Promise.all([
+      loadPlayerStats(player1.userId),
+      loadPlayerStats(player.userId),
+    ]);
+  } catch (err) {
+    console.error("[game:join] erreur chargement loadout:", err);
+    abortJoin("Erreur serveur au lancement de la partie");
+    return;
+  }
+
+  if (!rooms.has(roomId) || room.status !== "waiting") {
+    abortJoin("La partie n'est plus disponible");
+    return;
+  }
+
+  registerGameSocket(io, roomId, room, [
+    { socket: player1Socket, player: { ...player1, ...profile1 } },
+    { socket, player: { ...player, ...profile2 } },
+  ]);
+
+  broadcastLobbyState(io);
+}
+
+// After a finished match its players can ask to play again together, for a short while
+const REMATCH_TTL_MS = 60_000;
+
+interface RematchOffer {
+  roomId: string;
+  // Real players only, in their spawn order
+  socketIds: string[];
+  accepted: Set<string>;
+  difficulty?: BotDifficulty;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+const rematchOffers = new Map<string, RematchOffer>();
+
+export function openRematch(io: Server, room: RoomState) {
+  const socketIds = Array.from(room.players.keys()).filter((id) => id !== room.bot?.id);
+  rematchOffers.set(room.roomId, {
+    roomId: room.roomId,
+    socketIds,
+    accepted: new Set(),
+    difficulty: room.bot?.difficulty,
+    timer: setTimeout(() => closeRematch(io, room.roomId, null), REMATCH_TTL_MS),
+  });
+}
+
+// leaverSocketId is the player who left, named to the others; null when the offer expired
+function closeRematch(io: Server, roomId: string, leaverSocketId: string | null) {
+  const offer = rematchOffers.get(roomId);
+  if (!offer) return;
+  clearTimeout(offer.timer);
+  rematchOffers.delete(roomId);
+  const username = leaverSocketId
+    ? (connectedPlayers.get(leaverSocketId)?.username ?? null)
+    : null;
+  for (const id of offer.socketIds) {
+    if (id === leaverSocketId) continue;
+    io.sockets.sockets.get(id)?.emit("game:rematchCancelled", { roomId, username });
+  }
+}
+
+function cancelRematchesOf(io: Server, socketId: string) {
+  for (const offer of Array.from(rematchOffers.values())) {
+    if (offer.socketIds.includes(socketId)) closeRematch(io, offer.roomId, socketId);
+  }
+}
+
+async function startRematch(io: Server, offer: RematchOffer, players: ConnectedPlayer[]) {
+  const difficulty = offer.difficulty;
+  const full = difficulty
+    ? rooms.size - publicRooms().length >= MAX_TRAINING_ROOMS
+    : publicRooms().length >= MAX_TOTAL_ROOMS;
+  if (full) {
+    for (const p of players) {
+      io.sockets.sockets.get(p.socketId)?.emit("game:rematchCancelled", {
+        roomId: offer.roomId,
+        username: null,
+      });
+    }
+    return;
+  }
+
+  const room = openRoom(io, players, { training: !!difficulty });
+  const { roomId } = room;
+
+  let profiles;
+  try {
+    profiles = await Promise.all(players.map((p) => loadPlayerStats(p.userId)));
+  } catch (err) {
+    console.error("[game:rematch] erreur chargement loadout:", err);
+    io.to(roomId).emit("game:cancelled", { roomId });
+    teardownRoom(io, room);
+    return;
+  }
+  // A player who left meanwhile already cancelled the room
+  if (rooms.get(roomId) !== room || room.status !== "waiting") return;
+
+  const entries = players.map((p, i) => ({
+    socket: io.sockets.sockets.get(p.socketId),
+    player: { ...p, ...profiles[i] },
+  }));
+  if (entries.some((e) => !e.socket)) {
+    io.to(roomId).emit("game:cancelled", { roomId });
+    teardownRoom(io, room);
+    return;
+  }
+
+  registerGameSocket(
+    io,
+    roomId,
+    room,
+    entries as { socket: Socket; player: (typeof entries)[number]["player"] }[],
+    difficulty
+      ? {
+          difficulty,
+          stats: botStats(profiles[0].stats, difficulty),
+          level: profiles[0].level,
+          sprite: botShipFor(players[0].activeShip),
+        }
+      : undefined,
+  );
+  broadcastLobbyState(io);
 }
 
 // Single exit path for a room: stops its timers, frees every member and refreshes the lobby.
@@ -209,6 +437,7 @@ async function handlePlayerLeave(io: Server, socketId: string, roomId: string) {
   // Stopped synchronously, before any await, so the next-round timer cannot restart the loop
   room.status = "matchEnd";
   teardownRoom(io, room);
+  if (room.training) return;
 
   const opponentEntry = Array.from(room.players.entries()).find(
     ([id]) => id !== socketId,
@@ -294,6 +523,7 @@ export function registerLobbySocket(io: Server, socket: Socket) {
   trackSocket(socket, userId);
 
   guard(socket, "user:join", async () => {
+    cancelRematchesOf(io, socket.id);
     // Coming back to the lobby means leaving any room this socket was still part of
     const previous = connectedPlayers.get(socket.id);
     if (previous?.currentRoomId) {
@@ -319,38 +549,64 @@ export function registerLobbySocket(io: Server, socket: Socket) {
   guard(socket, "game:create", () => {
     const player = connectedPlayers.get(socket.id);
     if (!player || player.status !== "idle") return;
+    createDuelRoom(io, socket, player);
+  });
 
-    if (rooms.size >= MAX_TOTAL_ROOMS) {
+  // Joins the oldest duel waiting for an opponent, or opens one when nobody is waiting
+  guard(socket, "game:quickplay", async () => {
+    const player = connectedPlayers.get(socket.id);
+    if (!player || player.status !== "idle") return;
+    const open = publicRooms()
+      .filter(
+        (r) =>
+          r.status === "waiting" &&
+          r.waitingPlayers?.length === 1 &&
+          connectedPlayers.has(r.waitingPlayers[0]) &&
+          !r.playerUserIds?.has(player.userId),
+      )
+      .sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0))[0];
+    if (open) await joinDuelRoom(io, socket, player, open);
+    else createDuelRoom(io, socket, player);
+  });
+
+  guard(socket, "game:training", async (data: { difficulty?: string }) => {
+    const player = connectedPlayers.get(socket.id);
+    if (!player || player.status !== "idle") return;
+    const difficulty = BOT_DIFFICULTIES.find((d) => d === data?.difficulty);
+    if (!difficulty) return;
+
+    if (rooms.size - publicRooms().length >= MAX_TRAINING_ROOMS) {
       socket.emit("game:error", { message: "Serveur saturé, réessaie plus tard" });
       return;
     }
-    if (roomsOwnedBy(player.userId) >= MAX_ROOMS_PER_USER) {
-      socket.emit("game:error", { message: "Tu as déjà une partie en attente" });
+
+    const room = openRoom(io, [player], { training: true });
+    const { roomId } = room;
+
+    let profile;
+    try {
+      profile = await loadPlayerStats(player.userId);
+    } catch (err) {
+      console.error("[game:training] erreur chargement loadout:", err);
+      socket.emit("game:error", { message: "Erreur serveur au lancement de l'entraînement" });
+      teardownRoom(io, room);
       return;
     }
+    if (rooms.get(roomId) !== room || room.status !== "waiting") return;
 
-    const roomId = generateRoomId();
-    const room: RoomState = {
+    // The bot starts from the player's own attributes, then its difficulty softens it
+    registerGameSocket(
+      io,
       roomId,
-      players: new Map(),
-      bullets: [],
-      scores: new Map(),
-      spectators: new Set(),
-      status: "waiting",
-      roundStartTime: 0,
-      ownerUserId: player.userId,
-      playerUserIds: new Set([player.userId]),
-      createdAt: Date.now(),
-    };
-
-    room.waitingPlayers = [socket.id];
-
-    rooms.set(roomId, room);
-    socket.join(roomId);
-    player.status = "in-game";
-    player.currentRoomId = roomId;
-
-    socket.emit("game:created", { roomId });
+      room,
+      [{ socket, player: { ...player, ...profile } }],
+      {
+        difficulty,
+        stats: botStats(profile.stats, difficulty),
+        level: profile.level,
+        sprite: botShipFor(player.activeShip),
+      },
+    );
     broadcastLobbyState(io);
   });
 
@@ -371,64 +627,44 @@ export function registerLobbySocket(io: Server, socket: Socket) {
     if (!roomId) return;
     const player = connectedPlayers.get(socket.id);
     const room = rooms.get(roomId);
-    if (!player || !room || player.status !== "idle") return;
+    if (!player || !room || player.status !== "idle" || room.training) return;
+    await joinDuelRoom(io, socket, player, room);
+  });
 
-    const waitingPlayers = room.waitingPlayers ?? [];
-    if (room.status !== "waiting" || waitingPlayers.length >= 2) return;
+  guard(socket, "game:rematch", async (data: { roomId?: string }) => {
+    const roomId = validRoomId(data?.roomId);
+    if (!roomId) return;
+    const offer = rematchOffers.get(roomId);
+    if (!offer) {
+      // Expired: the button must not stay stuck on waiting
+      socket.emit("game:rematchCancelled", { roomId, username: null });
+      return;
+    }
+    if (!offer.socketIds.includes(socket.id)) return;
 
-    if (room.playerUserIds?.has(player.userId)) {
-      socket.emit("game:error", {
-        message: "Tu ne peux pas rejoindre ta propre partie",
-      });
+    const players = offer.socketIds.map((id) => connectedPlayers.get(id));
+    const gone = offer.socketIds.find(
+      (id, i) => players[i]?.status !== "idle" || !io.sockets.sockets.has(id),
+    );
+    if (gone) {
+      closeRematch(io, roomId, gone);
       return;
     }
 
-    waitingPlayers.push(socket.id);
-    room.playerUserIds?.add(player.userId);
-    room.waitingPlayers = waitingPlayers;
-    socket.join(roomId);
-    player.status = "in-game";
-    player.currentRoomId = roomId;
-
-    const abortJoin = (message: string) => {
-      socket.emit("game:error", { message });
-      // The creator would otherwise keep waiting on a room that no longer exists
-      socket.to(roomId).emit("game:cancelled", { roomId });
-      teardownRoom(io, room);
-    };
-
-    const player1SocketId = waitingPlayers[0];
-    const player1Socket = io.sockets.sockets.get(player1SocketId);
-    const player1 = connectedPlayers.get(player1SocketId);
-
-    if (!player1Socket || !player1) {
-      abortJoin("Le créateur de la partie s'est déconnecté");
+    offer.accepted.add(socket.id);
+    if (offer.accepted.size < offer.socketIds.length) {
+      for (const id of offer.socketIds) {
+        if (id === socket.id) continue;
+        io.sockets.sockets.get(id)?.emit("game:rematchOffered", {
+          roomId,
+          username: connectedPlayers.get(socket.id)?.username,
+        });
+      }
       return;
     }
-
-    let profile1, profile2;
-    try {
-      [profile1, profile2] = await Promise.all([
-        loadPlayerStats(player1.userId),
-        loadPlayerStats(player.userId),
-      ]);
-    } catch (err) {
-      console.error("[game:join] erreur chargement loadout:", err);
-      abortJoin("Erreur serveur au lancement de la partie");
-      return;
-    }
-
-    if (!rooms.has(roomId) || room.status !== "waiting") {
-      abortJoin("La partie n'est plus disponible");
-      return;
-    }
-
-    registerGameSocket(io, roomId, room, [
-      { socket: player1Socket, player: { ...player1, ...profile1 } },
-      { socket, player: { ...player, ...profile2 } },
-    ]);
-
-    broadcastLobbyState(io);
+    clearTimeout(offer.timer);
+    rematchOffers.delete(roomId);
+    await startRematch(io, offer, players as ConnectedPlayer[]);
   });
 
   guard(socket, "game:spectate", (data: { roomId?: string }) => {
@@ -436,7 +672,7 @@ export function registerLobbySocket(io: Server, socket: Socket) {
     if (!roomId) return;
     const player = connectedPlayers.get(socket.id);
     const room = rooms.get(roomId);
-    if (!player || !room || room.status === "matchEnd") return;
+    if (!player || !room || room.status === "matchEnd" || room.training) return;
     if (player.status !== "idle") return;
     if (room.playerUserIds?.has(player.userId)) return;
 
@@ -469,6 +705,7 @@ export function registerLobbySocket(io: Server, socket: Socket) {
   });
 
   socket.on("disconnect", () => {
+    cancelRematchesOf(io, socket.id);
     const player = connectedPlayers.get(socket.id);
     if (player) {
       if (player.currentRoomId)
@@ -574,7 +811,7 @@ export function listLiveRooms() {
               score: 0,
             }))
         : Array.from(r.players.values()).map((p) => ({
-            userId: p.userId,
+            userId: p.id === r.bot?.id ? null : p.userId,
             username: p.username,
             level: p.level,
             score: r.scores.get(p.id) ?? 0,
@@ -582,6 +819,7 @@ export function listLiveRooms() {
     return {
       roomId: r.roomId,
       status: r.status,
+      training: !!r.training,
       players,
       spectatorCount: r.spectators.size,
       createdAt: r.createdAt ?? null,

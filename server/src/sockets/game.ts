@@ -22,7 +22,25 @@ import {
   recordMatchResult,
   saveGameRecord,
 } from "../services/match.service.js";
-import { announceLevelChange, rooms, teardownRoom } from "./lobby.js";
+import {
+  BOT_BULLET,
+  BOT_BULLET_SECONDARY,
+  BOT_ID_PREFIX,
+  BOT_USER_ID,
+  type BotDifficulty,
+  botUsername,
+  createBotBrain,
+  nextBotInput,
+  resetBotBrain,
+} from "../services/bot.service.js";
+import { announceLevelChange, openRematch, rooms, teardownRoom } from "./lobby.js";
+
+export interface TrainingBot {
+  difficulty: BotDifficulty;
+  stats: PlayerStats;
+  level: number;
+  sprite: string;
+}
 
 interface PlayerEntry {
   socket: Socket;
@@ -93,6 +111,7 @@ function resetRound(room: RoomState) {
     resetShotState(player);
     index++;
   }
+  if (room.bot) resetBotBrain(room.bot.brain);
 }
 
 function buildStartPayload(room: RoomState) {
@@ -165,6 +184,7 @@ export function registerGameSocket(
   roomId: string,
   room: RoomState,
   entries: PlayerEntry[],
+  bot?: TrainingBot,
 ) {
   room.status = "playing";
   room.roundStartTime = Date.now();
@@ -188,6 +208,27 @@ export function registerGameSocket(
     lastProcessedSeq.set(entry.socket.id, 0);
     inputCredits.set(entry.socket.id, INPUT_BURST_MAX);
   });
+
+  // Added after the players: spawn sides follow insertion order at every round
+  if (bot) {
+    const id = `${BOT_ID_PREFIX}${roomId}`;
+    room.players.set(
+      id,
+      createPlayerState(
+        id,
+        BOT_USER_ID,
+        botUsername(bot.difficulty),
+        entries.length,
+        bot.sprite,
+        BOT_BULLET,
+        BOT_BULLET_SECONDARY,
+        bot.stats,
+        bot.level,
+      ),
+    );
+    room.scores.set(id, 0);
+    room.bot = { id, brain: createBotBrain(bot.difficulty), difficulty: bot.difficulty };
+  }
 
   for (const entry of entries) {
     entry.socket.removeAllListeners("game:input");
@@ -246,6 +287,17 @@ function makeTick(io: Server, roomId: string, room: RoomState) {
     const removed = moveBullets(room.bullets);
 
     for (const player of players) {
+      if (player.id === room.bot?.id) {
+        const target = players.find((p) => p.id !== player.id);
+        const input = nextBotInput(room.bot.brain, player, target, room.bullets, now);
+        for (const shot of applyInput(player, input, now)) {
+          room.bullets.push(shot);
+          added.push(toBulletPayload(shot, now));
+        }
+        regenerate(player, now);
+        continue;
+      }
+
       const queue = inputQueues.get(player.id);
       let credit = Math.min(
         (inputCredits.get(player.id) ?? 0) + 1,
@@ -461,7 +513,16 @@ async function endMatch(
 
   try {
     const winner = room.players.get(winnerSocketId);
-    if (winner) {
+    if (winner && room.training) {
+      io.to(roomId).emit("game:matchEnd", {
+        winner: { id: winner.id, username: winner.username },
+        scores: Object.fromEntries(room.scores),
+        training: true,
+        pointsEarned: 0,
+        rewardNotes: [],
+        newPoints: null,
+      });
+    } else if (winner) {
       const loser = players.find((p) => p.id !== winnerSocketId);
 
       const results = await recordMatchResult({
@@ -516,6 +577,7 @@ async function endMatch(
         });
       }
     }
+    if (winner) openRematch(io, room);
   } catch (err) {
     console.error("[endMatch] erreur:", err);
     // Without this the players would stay frozen on the game screen

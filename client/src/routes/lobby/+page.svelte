@@ -27,14 +27,12 @@
 	import Users from '@lucide/svelte/icons/users';
 	import MessageSquare from '@lucide/svelte/icons/message-square';
 	import Eye from '@lucide/svelte/icons/eye';
-	import Trophy from '@lucide/svelte/icons/trophy';
-	import Skull from '@lucide/svelte/icons/skull';
-	import Zap from '@lucide/svelte/icons/zap';
 	import Bomb from '@lucide/svelte/icons/bomb';
+	import Zap from '@lucide/svelte/icons/zap';
 	import Shield from '@lucide/svelte/icons/shield';
 	import Warehouse from '@lucide/svelte/icons/warehouse';
-	import DoorOpen from '@lucide/svelte/icons/door-open';
 	import X from '@lucide/svelte/icons/x';
+	import Bot from '@lucide/svelte/icons/bot';
 	import { getGrade } from '$lib/shared/grades';
 	import { findItem, itemFrameUrls, pingPongOrder } from '$lib/itemImages';
 	import type { Socket } from 'socket.io-client';
@@ -66,6 +64,14 @@
 
 	let players = $state<Player[]>([]);
 	let rooms = $state<Room[]>([]);
+	// Matchmaking pairs waiting players on its own, only the matches being played are worth listing
+	const liveDuels = $derived(
+		rooms.filter(
+			(r) =>
+				(r.status === 'playing' || r.status === 'roundEnd') &&
+				!r.players.some((p) => p.username === $currentUser?.username)
+		)
+	);
 	let chatInput = $state('');
 	let socket: Socket | null = null;
 	let createdRoom = $state<string | null>(null);
@@ -116,8 +122,18 @@
 		return () => clearInterval(timer);
 	});
 
-	function lbMedal(i: number) {
-		return i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}`;
+	const LB_SORTS: { key: LeaderboardSort; label: string; unit: [string, string] }[] = [
+		{ key: 'wins', label: 'Victoires', unit: ['victoire', 'victoires'] },
+		{ key: 'losses', label: 'Défaites', unit: ['défaite', 'défaites'] },
+		{ key: 'level', label: 'Niveau', unit: ['niv.', 'niv.'] },
+		{ key: 'desertions', label: 'Désertions', unit: ['désertion', 'désertions'] }
+	];
+	const lbCurrent = $derived(LB_SORTS.find((s) => s.key === lbSort) ?? LB_SORTS[0]);
+	function lbScore(p: LeaderboardPlayer): number {
+		if (lbSort === 'wins') return p.stats.wins;
+		if (lbSort === 'losses') return p.stats.losses;
+		if (lbSort === 'desertions') return p.stats.desertions ?? 0;
+		return p.level ?? 1;
 	}
 	let hoveredItem = $state<InventoryItem | null>(null);
 	let popoverX = $state(0);
@@ -313,19 +329,28 @@
 		hoveredItem = null;
 	});
 
-	function createGame() {
+	function play() {
 		lobbyError = null;
-		socket?.emit(GAME_EVENT.CREATE);
+		socket?.emit(GAME_EVENT.QUICKPLAY);
+	}
+
+	const BOT_LEVELS = [
+		{ difficulty: 'facile', label: 'Facile' },
+		{ difficulty: 'normal', label: 'Normal' },
+		{ difficulty: 'difficile', label: 'Difficile' }
+	] as const;
+
+	let choosingLevel = $state(false);
+
+	function startTraining(difficulty: (typeof BOT_LEVELS)[number]['difficulty']) {
+		choosingLevel = false;
+		lobbyError = null;
+		socket?.emit(GAME_EVENT.TRAINING, { difficulty });
 	}
 
 	function cancelGame() {
 		if (!createdRoom) return;
 		socket?.emit(GAME_EVENT.CANCEL, { roomId: createdRoom });
-	}
-
-	function joinGame(roomId: string) {
-		lobbyError = null;
-		socket?.emit(GAME_EVENT.JOIN, { roomId });
 	}
 
 	function spectate(roomId: string) {
@@ -380,10 +405,6 @@
 			date.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' }) +
 			` ${time}`
 		);
-	}
-
-	function statusLabel(status: string) {
-		return status === 'waiting' ? 'En attente' : 'En cours';
 	}
 
 	function radarPath(values: number[]): string {
@@ -586,17 +607,34 @@
 		<div class="hero-actions">
 			<div class="primary-cta">
 				{#if createdRoom}
-					<button class="btn btn-hero" disabled><Clock size={14} /> En attente…</button>
+					<button class="btn btn-hero" disabled><Clock size={14} /> Recherche…</button>
 				{:else}
-					<button class="btn btn-hero" onclick={createGame}>Lancer un duel</button>
+					<button class="btn btn-hero" onclick={play}>Jouer</button>
 				{/if}
 			</div>
 			{#if lobbyError}<p class="loadout-error" role="alert">{lobbyError}</p>{/if}
 			{#if createdRoom}
 				<div class="secondary-actions">
 					<button class="btn-ghost" onclick={cancelGame}>
-						<span class="btn-ghost-icon"><X size={12} /></span> Annuler le duel
+						<span class="btn-ghost-icon"><X size={12} /></span> Annuler la recherche
 					</button>
+				</div>
+			{:else}
+				<div class="secondary-actions">
+					{#if choosingLevel}
+						{#each BOT_LEVELS as level (level.difficulty)}
+							<button class="btn-ghost" onclick={() => startTraining(level.difficulty)}>
+								{level.label}
+							</button>
+						{/each}
+						<button class="btn-ghost" aria-label="Annuler" onclick={() => (choosingLevel = false)}>
+							<span class="btn-ghost-icon"><X size={12} /></span>
+						</button>
+					{:else}
+						<button class="btn-ghost" onclick={() => (choosingLevel = true)}>
+							<span class="btn-ghost-icon"><Bot size={12} /></span> S'entraîner contre un bot
+						</button>
+					{/if}
 				</div>
 			{/if}
 		</div>
@@ -795,71 +833,69 @@
 					</div>
 				</div>
 			{:else}
-				<div class="lb-sort">
-					<button class="lb-stab" class:active={lbSort === 'wins'} onclick={() => setLbSort('wins')}
-						><Trophy size={14} /> Victoires</button
-					>
-					<button
-						class="lb-stab"
-						class:active={lbSort === 'losses'}
-						onclick={() => setLbSort('losses')}><Skull size={14} /> Défaites</button
-					>
-					<button
-						class="lb-stab"
-						class:active={lbSort === 'level'}
-						onclick={() => setLbSort('level')}><Zap size={14} /> Niveau</button
-					>
-					<button
-						class="lb-stab"
-						class:active={lbSort === 'desertions'}
-						onclick={() => setLbSort('desertions')}><DoorOpen size={14} /> Désertions</button
-					>
-				</div>
-				<div class="lb-list">
-					{#each leaderboard as p, i (p.username)}
-						<div class="lb-row" class:lb-me={p.username === $currentUser?.username}>
-							<span class="lb-rank">{lbMedal(i)}</span>
-							<span class="lb-name"><GradeBadge level={p.level} /> {p.username}</span>
-							<span class="lb-val" class:lb-desertions={lbSort === 'desertions'}>
-								{#if lbSort === 'wins'}{p.stats.wins}
-								{:else if lbSort === 'losses'}{p.stats.losses}
-								{:else if lbSort === 'desertions'}{p.stats.desertions ?? 0}
-								{:else}Niv. {p.level ?? 1}{/if}
-							</span>
-						</div>
-					{:else}
-						<p class="empty-text">Personne pour l'instant</p>
+				<div class="lb-sort" role="tablist" aria-label="Trier le classement">
+					{#each LB_SORTS as sort (sort.key)}
+						<button
+							class="lb-seg"
+							class:active={lbSort === sort.key}
+							role="tab"
+							aria-selected={lbSort === sort.key}
+							onclick={() => setLbSort(sort.key)}>{sort.label}</button
+						>
 					{/each}
 				</div>
+				<ol class="lb-list">
+					{#each leaderboard as p, i (p.username)}
+						{@const g = getGrade(p.level ?? 1)}
+						{@const score = lbScore(p)}
+						<li class="lb-row" class:lb-me={p.username === $currentUser?.username}>
+							<span
+								class="lb-rank"
+								class:gold={i === 0}
+								class:silver={i === 1}
+								class:bronze={i === 2}>{i + 1}</span
+							>
+							<span class="lb-who">
+								<span class="lb-name">{p.username}</span>
+								<span class="lb-grade" style="color: {g.color}">{g.label}</span>
+							</span>
+							<span
+								class="lb-score"
+								class:bad={lbSort === 'losses' || lbSort === 'desertions'}
+								class:level={lbSort === 'level'}
+							>
+								{#if lbSort === 'level'}
+									<small>niv.</small><strong>{score}</strong>
+								{:else}
+									<strong>{score}</strong><small>{lbCurrent.unit[score > 1 ? 1 : 0]}</small>
+								{/if}
+							</span>
+						</li>
+					{:else}
+						<li class="empty-text">Personne pour l'instant</li>
+					{/each}
+				</ol>
 			{/if}
 		</section>
 
 		<section class="panel duels-panel">
 			<h2>
-				<Swords size={14} /> Duels <span class="col-badge">{rooms.length}</span>
+				<Swords size={14} /> Duels en cours <span class="col-badge">{liveDuels.length}</span>
 			</h2>
 			<div class="duels-list">
 				{#if createdRoom}
 					<div class="waiting-row">
-						<span><Clock size={14} /> En attente…</span>
+						<span><Clock size={14} /> Recherche d'un adversaire…</span>
 						<button class="btn btn-danger btn-sm" onclick={cancelGame}>Annuler</button>
 					</div>
 				{/if}
-				{#each rooms.filter((r) => !r.players.some((p) => p.username === $currentUser?.username)) as room (room.roomId)}
+				{#each liveDuels as room (room.roomId)}
 					<div class="duel-item">
 						<span class="room-players">{room.players.map((p) => p.username).join(' vs ')}</span>
-						<span class="room-status">{statusLabel(room.status)}</span>
 						<div class="room-actions">
-							{#if room.status === 'waiting' && room.players.length < 2}
-								<button class="btn btn-primary btn-sm" onclick={() => joinGame(room.roomId)}
-									>Rejoindre</button
-								>
-							{/if}
-							{#if room.status === 'playing' || room.status === 'roundEnd'}
-								<button class="btn btn-secondary btn-sm" onclick={() => spectate(room.roomId)}
-									><Eye size={14} /> Regarder</button
-								>
-							{/if}
+							<button class="btn btn-secondary btn-sm" onclick={() => spectate(room.roomId)}
+								><Eye size={14} /> Regarder</button
+							>
 						</div>
 					</div>
 				{:else}
@@ -1007,7 +1043,6 @@
 
 	:global(.chat-col-title svg),
 	:global(.ltab svg),
-	:global(.lb-stab svg),
 	:global(.waiting-row svg),
 	:global(.btn-hero svg),
 	:global(.btn-ghost svg) {
@@ -1015,8 +1050,7 @@
 		vertical-align: middle;
 		flex-shrink: 0;
 	}
-	:global(.ltab svg),
-	:global(.lb-stab svg) {
+	:global(.ltab svg) {
 		color: inherit;
 	}
 
@@ -1461,10 +1495,6 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	.room-status {
-		font-size: 0.68rem;
-		color: #6870a0;
-	}
 	.room-actions {
 		display: flex;
 		gap: 0.3rem;
@@ -1834,79 +1864,135 @@
 
 	.lb-sort {
 		display: flex;
-		gap: 0.35rem;
-	}
-	.lb-stab {
-		flex: 1;
+		gap: 2px;
+		padding: 3px;
+		margin-bottom: 0.6rem;
 		background: rgba(255, 255, 255, 0.03);
 		border: 1px solid rgba(77, 217, 255, 0.12);
-		border-radius: 6px;
-		color: #5060a0;
-		font-size: 0.7rem;
+		border-radius: 999px;
+	}
+	.lb-seg {
+		flex: 1;
+		min-width: 0;
+		padding: 0.32rem 0.2rem;
+		background: none;
+		border: none;
+		border-radius: 999px;
+		color: #6070a8;
+		font-size: 0.68rem;
 		font-weight: 600;
-		padding: 0.3rem 0;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
 		cursor: pointer;
-		transition: all 0.15s;
+		transition:
+			color 0.15s,
+			background 0.15s;
 	}
-	.lb-stab:hover {
+	.lb-seg:hover {
 		color: #a0b0d0;
-		border-color: rgba(77, 217, 255, 0.25);
 	}
-	.lb-stab.active {
-		color: #4dd9ff;
-		border-color: #4dd9ff;
-		background: rgba(77, 217, 255, 0.07);
+	.lb-seg.active {
+		color: #050818;
+		background: #4dd9ff;
+		box-shadow: 0 0 10px rgba(77, 217, 255, 0.35);
 	}
 	.lb-list {
 		display: flex;
 		flex-direction: column;
-		gap: 0.2rem;
+		gap: 2px;
+		margin: 0;
+		padding: 0;
+		list-style: none;
 		overflow-y: auto;
 		max-height: 180px;
 		scrollbar-width: thin;
 		scrollbar-color: rgba(77, 217, 255, 0.15) transparent;
 	}
 	.lb-row {
-		display: flex;
+		display: grid;
+		grid-template-columns: 1.6rem minmax(0, 1fr) auto;
 		align-items: center;
-		gap: 0.5rem;
-		font-size: 0.78rem;
-		padding: 0.3rem 0.4rem;
-		border-radius: 6px;
+		gap: 0.6rem;
+		padding: 0.35rem 0.5rem;
+		border-radius: 8px;
 		transition: background 0.1s;
 	}
 	.lb-row:hover {
 		background: rgba(255, 255, 255, 0.03);
 	}
 	.lb-me {
-		background: rgba(100, 100, 255, 0.08);
-		border: 1px solid rgba(100, 100, 255, 0.15);
+		background: rgba(77, 217, 255, 0.07);
+		box-shadow: inset 2px 0 0 #4dd9ff;
 	}
 	.lb-rank {
-		font-size: 0.85rem;
-		width: 24px;
-		flex-shrink: 0;
-		text-align: center;
+		display: grid;
+		place-items: center;
+		width: 1.6rem;
+		height: 1.6rem;
+		border-radius: 50%;
+		color: #6070a8;
+		font-size: 0.72rem;
+		font-weight: 700;
+		font-variant-numeric: tabular-nums;
+	}
+	.lb-rank.gold {
+		color: #ffd700;
+		background: rgba(255, 215, 0, 0.12);
+		box-shadow: inset 0 0 0 1px rgba(255, 215, 0, 0.45);
+	}
+	.lb-rank.silver {
+		color: #d4dcea;
+		background: rgba(212, 220, 234, 0.1);
+		box-shadow: inset 0 0 0 1px rgba(212, 220, 234, 0.4);
+	}
+	.lb-rank.bronze {
+		color: #e3975e;
+		background: rgba(227, 151, 94, 0.12);
+		box-shadow: inset 0 0 0 1px rgba(227, 151, 94, 0.45);
+	}
+	.lb-who {
+		display: flex;
+		flex-direction: column;
+		min-width: 0;
+		line-height: 1.25;
 	}
 	.lb-name {
-		flex: 1;
-		color: #a0a8c0;
+		color: #d6deff;
+		font-size: 0.8rem;
+		font-weight: 600;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
 	.lb-me .lb-name {
-		color: #c0c8ff;
+		color: #4dd9ff;
+	}
+	.lb-grade {
+		font-size: 0.62rem;
 		font-weight: 600;
+		letter-spacing: 0.2px;
+		opacity: 0.85;
 	}
-	.lb-val {
+	.lb-score {
+		display: flex;
+		align-items: baseline;
+		gap: 0.25rem;
+		font-variant-numeric: tabular-nums;
+	}
+	.lb-score strong {
 		color: #ffd700;
-		font-weight: 700;
-		font-size: 0.75rem;
-		flex-shrink: 0;
+		font-size: 0.95rem;
 	}
-	.lb-val.lb-desertions {
-		color: #ff6b6b;
+	.lb-score small {
+		color: #6070a8;
+		font-size: 0.62rem;
+	}
+	.lb-score.bad strong {
+		color: #ff8080;
+	}
+	.lb-score.level strong {
+		color: #4dd9ff;
 	}
 
 	.btn-sm {

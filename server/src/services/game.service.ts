@@ -1,4 +1,5 @@
 import { User } from "../models/User.js";
+import type { BotBrain, BotDifficulty } from "./bot.service.js";
 import {
   type PlayerStats,
   PERK_CONFIG,
@@ -126,6 +127,9 @@ export interface RoomState {
   intervalId?: ReturnType<typeof setInterval>;
   nextRoundTimeout?: ReturnType<typeof setTimeout>;
   waitingPlayers?: string[];
+  // Practice match against the bot: never saved, no rewards, no desertion penalty
+  training?: boolean;
+  bot?: { id: string; brain: BotBrain; difficulty: BotDifficulty };
   simTime?: number;
   lastSent?: Map<
     string,
