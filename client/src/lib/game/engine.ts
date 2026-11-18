@@ -27,6 +27,10 @@ import { api } from '$lib/api';
 import { findItem, itemFrameUrls, type ItemImageRef } from '$lib/itemImages';
 import type { Socket } from 'socket.io-client';
 import * as sfx from './sfx';
+import { drawFunBullet, drawFunShip } from './funSprites';
+
+// Vaisseaux et tirs remplacés par funSprites.ts en partie ; false pour revenir aux images des items.
+const FUN_SPRITES = true;
 
 // Remote entities are rendered this far in the past so there are always two snapshots to blend
 const INTERP_DELAY_MS = 100;
@@ -234,6 +238,7 @@ export class GameEngine {
 	private playerVisuals = new Map<string, PlayerVisual>();
 	private shipFrameUrls = new Map<string, string[]>();
 	private bulletImageUrls = new Map<string, string>();
+	private funShipTexture: Texture | null = null;
 	private bulletVisuals = new Map<string, BulletVisual>();
 	private socket: Socket;
 	private myId: string;
@@ -601,7 +606,10 @@ export class GameEngine {
 		const texture = url ? Assets.get(url) : undefined;
 		const isSpecial = type === 'special';
 		let visual: Sprite | Graphics;
-		if (texture) {
+		if (FUN_SPRITES) {
+			visual = drawFunBullet(isSpecial);
+			visual.rotation = angle;
+		} else if (texture) {
 			const spr = new Sprite(texture);
 			spr.anchor.set(0.5);
 			spr.width = isSpecial ? 24 : 16;
@@ -687,6 +695,19 @@ export class GameEngine {
 	}
 
 	private createShipSprite(spriteName: string, playerId: string): Sprite | AnimatedSprite {
+		if (FUN_SPRITES) {
+			this.funShipTexture ??= this.app.renderer.generateTexture({
+				target: drawFunShip(),
+				resolution: 2
+			});
+			const spr = new Sprite(this.funShipTexture);
+			spr.anchor.set(0.5);
+			spr.height = 64;
+			spr.scale.x = spr.scale.y;
+			spr.rotation = Math.PI / 2;
+			return spr;
+		}
+
 		const urls = this.shipFrameUrls.get(spriteName) ?? [];
 		if (urls.length > 1) {
 			const frames = urls.map((url) => Assets.get(url) ?? Texture.WHITE);
@@ -1515,6 +1536,7 @@ export class GameEngine {
 		// Destroying Pixi before its init resolves throws, init() handles it instead
 		if (!this.initDone) return;
 		this.starfield?.destroy();
+		this.funShipTexture?.destroy(true);
 		this.app.destroy(false);
 	}
 }
