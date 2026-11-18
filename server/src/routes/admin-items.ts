@@ -1,13 +1,16 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { Item, type ItemType, type BulletRole } from "../models/Item.js";
-import { User } from "../models/User.js";
+import { DEFAULT_LOADOUT, User } from "../models/User.js";
 import { recordAudit } from "../models/AuditLog.js";
+import { BOT_BULLET, BOT_BULLET_SECONDARY } from "../services/bot.service.js";
+import { type LoadoutSlot, unequipFromConnected } from "../sockets/lobby.js";
 import {
   AssetError,
   MAX_FRAMES,
   MAX_IMAGE_BYTES,
   SPRITE_PATTERN,
   decodeImages,
+  deleteItemImages,
   readImageInfo,
   replaceItemImages,
   withImages,
@@ -54,6 +57,19 @@ interface CreateBody {
 type UpdateBody = Partial<
   Pick<CreateBody, "name" | "description" | "price" | "priceGalactics">
 >;
+
+// Every player and the bot fall back on these, so they can never be deleted
+const PROTECTED_SPRITES = new Set<string>([
+  ...Object.values(DEFAULT_LOADOUT),
+  BOT_BULLET,
+  BOT_BULLET_SECONDARY,
+]);
+
+const SLOTS_BY_TYPE: Record<ItemType, LoadoutSlot[]> = {
+  ship: ["activeShip"],
+  bullet: ["activeBullet", "activeBulletSecondary"],
+  cosmetic: [],
+};
 
 function isFree(item: { price: number; priceGalactics?: number | null }) {
   return item.price === 0 && (item.priceGalactics ?? 0) === 0;
@@ -214,6 +230,48 @@ export async function adminItemsRoutes(app: FastifyInstance) {
       });
       const [updated] = await withImages([item]);
       return reply.send({ item: updated });
+    },
+  );
+
+  app.post<{ Params: { itemId: string } }>(
+    "/admin/items/:itemId/delete",
+    { ...adminOnly, schema: { params: itemIdParam } },
+    async (req, reply) => {
+      const item = await Item.findById(req.params.itemId).lean();
+      if (!item) return reply.code(404).send({ error: "Item non trouvé" });
+      if (PROTECTED_SPRITES.has(item.sprite)) {
+        return reply
+          .code(409)
+          .send({ error: "Item de base du jeu, il ne peut pas être supprimé" });
+      }
+
+      await Item.deleteOne({ _id: item._id });
+      const owners = await User.updateMany(
+        { inventory: item._id },
+        { $pull: { inventory: item._id } },
+      );
+      for (const slot of SLOTS_BY_TYPE[item.type]) {
+        await User.updateMany(
+          { [slot]: item.sprite },
+          { $set: { [slot]: DEFAULT_LOADOUT[slot] } },
+        );
+        unequipFromConnected(slot, item.sprite);
+      }
+      await deleteItemImages(item.type, item.sprite);
+
+      await recordAudit({
+        action: "item-delete",
+        actorId: req.account!.id,
+        actorUsername: req.account!.username,
+        details: {
+          itemId: String(item._id),
+          sprite: item.sprite,
+          name: item.name,
+          owners: owners.modifiedCount,
+        },
+        ip: req.ip,
+      });
+      return reply.send({ ok: true, owners: owners.modifiedCount });
     },
   );
 }

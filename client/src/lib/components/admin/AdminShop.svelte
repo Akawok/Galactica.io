@@ -48,6 +48,8 @@
 	let saving = $state(false);
 	let editError = $state<string | null>(null);
 	let editDone = $state<string | null>(null);
+	let confirmingDelete = $state(false);
+	let deletedNotice = $state<string | null>(null);
 
 	onMount(loadItems);
 
@@ -180,6 +182,8 @@
 		editImages = [];
 		editError = null;
 		editDone = null;
+		confirmingDelete = false;
+		deletedNotice = null;
 	}
 
 	function replaceInList(updated: Item) {
@@ -228,6 +232,25 @@
 			editDone = 'Images remplacées';
 		} catch (err) {
 			editError = err instanceof Error ? err.message : 'Envoi impossible';
+		} finally {
+			saving = false;
+		}
+	}
+
+	async function deleteSelected() {
+		if (!selected || saving) return;
+		const target = selected;
+		saving = true;
+		editError = null;
+		editDone = null;
+		try {
+			const { owners } = await api.admin.deleteItem(target._id);
+			items = items.filter((i) => i._id !== target._id);
+			selected = null;
+			deletedNotice = `${target.name} supprimé${owners ? `, retiré de ${owners} inventaire${owners > 1 ? 's' : ''}` : ''}`;
+		} catch (err) {
+			editError = err instanceof Error ? err.message : 'Suppression impossible';
+			confirmingDelete = false;
 		} finally {
 			saving = false;
 		}
@@ -421,12 +444,49 @@
 
 				{#if editError}<p class="error" role="alert">{editError}</p>{/if}
 				{#if editDone}<p class="success">{editDone}</p>{/if}
+
+				<div class="delete-zone">
+					{#if confirmingDelete}
+						<p>
+							Supprimer {selected.name} ? Ses images seront effacées, il sera retiré des inventaires
+							et les joueurs qui l'utilisent reprendront l'équipement de base.
+						</p>
+						<div class="delete-actions">
+							<button class="btn btn-danger btn-sm" onclick={deleteSelected} disabled={saving}>
+								Supprimer définitivement
+							</button>
+							<button class="btn btn-secondary btn-sm" onclick={() => (confirmingDelete = false)}>
+								Annuler
+							</button>
+						</div>
+					{:else}
+						<button class="btn btn-secondary btn-sm" onclick={() => (confirmingDelete = true)}>
+							Supprimer cet item
+						</button>
+					{/if}
+				</div>
 			</div>
+		{:else if deletedNotice}
+			<p class="success">{deletedNotice}</p>
 		{/if}
 	</section>
 </div>
 
 <style>
+	.delete-zone {
+		margin-top: 1.25rem;
+		padding-top: 1rem;
+		border-top: 1px solid rgba(255, 90, 90, 0.25);
+	}
+	.delete-zone p {
+		margin: 0 0 0.75rem;
+		font-size: 0.85rem;
+	}
+	.delete-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+	}
 	.layout {
 		display: grid;
 		grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);

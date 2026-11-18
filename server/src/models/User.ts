@@ -7,6 +7,12 @@ import {
 
 export type UserRole = "user" | "moderator" | "admin";
 
+export const DEFAULT_LOADOUT = {
+  activeShip: "spaceship-01",
+  activeBullet: "bullet1",
+  activeBulletSecondary: "bullet1",
+} as const;
+
 export interface IUser extends Document {
   username: string;
   usernameCanonical: string;
@@ -70,9 +76,9 @@ const UserSchema = new Schema<IUser>({
   xp: { type: Number, default: 0 },
   level: { type: Number, default: 1 },
   inventory: [{ type: Schema.Types.ObjectId, ref: "Item" }],
-  activeShip: { type: String, default: "spaceship-01" },
-  activeBullet: { type: String, default: "bullet1" },
-  activeBulletSecondary: { type: String, default: "bullet1" },
+  activeShip: { type: String, default: DEFAULT_LOADOUT.activeShip },
+  activeBullet: { type: String, default: DEFAULT_LOADOUT.activeBullet },
+  activeBulletSecondary: { type: String, default: DEFAULT_LOADOUT.activeBulletSecondary },
   attributes: {
     blindage: { type: Number, default: 0 },
     deflecteur: { type: Number, default: 0 },

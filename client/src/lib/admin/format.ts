@@ -85,7 +85,8 @@ export const ACTION_LABEL: Record<string, string> = {
 	'chat-purge': 'Chat vidé',
 	announce: 'Annonce',
 	'item-create': 'Item créé',
-	'item-update': 'Item modifié'
+	'item-update': 'Item modifié',
+	'item-delete': 'Item supprimé'
 };
 
 export function describeAudit(entry: { action: string; details?: Record<string, any> }): string {
@@ -130,6 +131,10 @@ export function describeAudit(entry: { action: string; details?: Record<string, 
 			return d.name ?? d.sprite ?? '';
 		case 'item-update':
 			return d.sprite ?? '';
+		case 'item-delete':
+			return [d.name ?? d.sprite, d.owners ? `retiré de ${plural(d.owners, 'inventaire')}` : null]
+				.filter(Boolean)
+				.join(' · ');
 		default:
 			return '';
 	}

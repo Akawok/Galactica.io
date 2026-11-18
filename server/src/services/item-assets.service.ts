@@ -127,6 +127,11 @@ export function decodeImages(encoded: string[]): DecodedImages {
   return { ext, buffers: decoded.map((d) => d.buf) };
 }
 
+export async function deleteItemImages(type: ItemType, sprite: string): Promise<void> {
+  if (!isValidSprite(sprite)) throw new AssetError("Identifiant invalide");
+  await rm(itemDir(type, sprite), { recursive: true, force: true });
+}
+
 // The new frames are written next to the live folder and swapped in with
 // renames, so a game loading the sprite never sees a half-written set.
 export async function replaceItemImages(

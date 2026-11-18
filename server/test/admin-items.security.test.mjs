@@ -298,3 +298,84 @@ describe("création et modification d'items", () => {
     assert.equal(frame3.status, 404);
   });
 });
+
+describe("suppression d'items", () => {
+  test("un vaisseau supprimé disparaît des inventaires, du hangar et du disque", async () => {
+    const player = await registerUser("own");
+    const admin = await adminSession();
+    const sprite = uniqueSprite();
+
+    const created = await call("/admin/items", {
+      method: "POST",
+      jar: admin.jar,
+      csrf: admin.csrf,
+      body: JSON.stringify({
+        name: "Épave",
+        price: 0,
+        priceGalactics: 0,
+        type: "ship",
+        sprite,
+        images: [PNG_A, PNG_B],
+      }),
+    });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const itemId = created.body.item._id;
+
+    const equipped = await call("/shop/equip", {
+      method: "POST",
+      jar: player.jar,
+      csrf: player.csrf,
+      body: JSON.stringify({ type: "ship", sprite }),
+    });
+    assert.equal(equipped.status, 200);
+    assert.equal(equipped.body.activeShip, sprite);
+
+    const refused = await call(`/admin/items/${itemId}/delete`, {
+      method: "POST",
+      jar: player.jar,
+      csrf: player.csrf,
+    });
+    assert.equal(refused.status, 403, "un joueur ne peut pas supprimer d'item");
+
+    const deleted = await call(`/admin/items/${itemId}/delete`, {
+      method: "POST",
+      jar: admin.jar,
+      csrf: admin.csrf,
+    });
+    assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
+    assert.ok(deleted.body.owners >= 1);
+
+    const stats = await call("/stats/me", { jar: player.jar });
+    assert.equal(stats.status, 200);
+    assert.ok(!stats.body.user.inventory.some((i) => i.sprite === sprite));
+    assert.equal(stats.body.user.activeShip, "spaceship-01");
+
+    const shop = await call("/shop/items");
+    assert.ok(!shop.body.items.some((i) => i.sprite === sprite));
+
+    const frame = await fetch(`${API}/assets/spaceships/${sprite}/f1.png`);
+    assert.equal(frame.status, 404, "le dossier d'images doit être effacé");
+
+    const again = await call(`/admin/items/${itemId}/delete`, {
+      method: "POST",
+      jar: admin.jar,
+      csrf: admin.csrf,
+    });
+    assert.equal(again.status, 404);
+  });
+
+  test("les items de base ne peuvent pas être supprimés", async () => {
+    const admin = await adminSession();
+    const list = await call("/admin/items", { jar: admin.jar });
+    for (const sprite of ["spaceship-01", "bullet1", "bullet2"]) {
+      const item = list.body.items.find((i) => i.sprite === sprite);
+      assert.ok(item, `${sprite} doit exister après le seed`);
+      const res = await call(`/admin/items/${item._id}/delete`, {
+        method: "POST",
+        jar: admin.jar,
+        csrf: admin.csrf,
+      });
+      assert.equal(res.status, 409, sprite);
+    }
+  });
+});

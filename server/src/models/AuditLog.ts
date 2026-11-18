@@ -8,6 +8,7 @@ export type AuditAction =
   | "chat-purge"
   | "item-create"
   | "item-update"
+  | "item-delete"
   | "kick"
   | "rename"
   | "resources"
@@ -41,6 +42,7 @@ const AuditLogSchema = new Schema<IAuditLog>({
       "chat-purge",
       "item-create",
       "item-update",
+      "item-delete",
       "kick",
       "rename",
       "resources",

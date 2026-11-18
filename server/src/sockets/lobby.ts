@@ -10,7 +10,7 @@ import {
   sendGameSnapshot,
 } from "./game.js";
 import { ChatMessage } from "../models/ChatMessage.js";
-import { User, isMuted } from "../models/User.js";
+import { DEFAULT_LOADOUT, User, isMuted } from "../models/User.js";
 import { recordDesertion, saveGameRecord } from "../services/match.service.js";
 import {
   BOT_DIFFICULTIES,
@@ -363,8 +363,10 @@ async function launchMatch(
   const { roomId } = room;
 
   let profiles;
+  let botShip = "";
   try {
     profiles = await Promise.all(players.map((p) => loadPlayerStats(p.userId)));
+    if (difficulty) botShip = await botShipFor(players[0].activeShip);
   } catch (err) {
     console.error("[launchMatch] erreur chargement loadout:", err);
     io.to(roomId).emit("game:cancelled", { roomId });
@@ -394,7 +396,7 @@ async function launchMatch(
           difficulty,
           stats: botStats(profiles[0].stats, difficulty),
           level: profiles[0].level,
-          sprite: botShipFor(players[0].activeShip),
+          sprite: botShip,
         }
       : undefined,
   );
@@ -708,8 +710,10 @@ export function registerLobbySocket(io: Server, socket: Socket) {
     const { roomId } = room;
 
     let profile;
+    let botShip = "";
     try {
       profile = await loadPlayerStats(player.userId);
+      botShip = await botShipFor(player.activeShip);
     } catch (err) {
       console.error("[game:training] erreur chargement loadout:", err);
       socket.emit("game:error", { message: "Erreur serveur au lancement de l'entraînement" });
@@ -728,7 +732,7 @@ export function registerLobbySocket(io: Server, socket: Socket) {
         difficulty,
         stats: botStats(profile.stats, difficulty),
         level: profile.level,
-        sprite: botShipFor(player.activeShip),
+        sprite: botShip,
       },
     );
     broadcastLobbyState(io);
@@ -916,6 +920,15 @@ export function listOnlinePlayers(): OnlinePlayerView[] {
     roomId:
       p.currentRoomId && rooms.has(p.currentRoomId) ? p.currentRoomId : null,
   }));
+}
+
+export type LoadoutSlot = keyof typeof DEFAULT_LOADOUT;
+
+// Players keep their loadout in memory between games, so a deleted item must go there too
+export function unequipFromConnected(slot: LoadoutSlot, sprite: string) {
+  for (const player of connectedPlayers.values()) {
+    if (player[slot] === sprite) player[slot] = DEFAULT_LOADOUT[slot];
+  }
 }
 
 export function findOnlinePlayer(userId: string): OnlinePlayerView | null {

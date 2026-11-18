@@ -85,6 +85,15 @@
 				r.players[0].username !== $currentUser?.username
 		)
 	);
+	const searchingRoomOf = $derived(
+		new Map(searchingRooms.map((r) => [r.players[0].username, r.roomId]))
+	);
+	const isSearching = (username: string) =>
+		searchingRoomOf.has(username) || (!!createdRoom && username === $currentUser?.username);
+	// Players waiting for an opponent come first: they are the ones worth noticing
+	const sortedPlayers = $derived(
+		[...players].sort((a, b) => Number(isSearching(b.username)) - Number(isSearching(a.username)))
+	);
 	let inventory = $state<InventoryItem[]>([]);
 	let fullStats = $state<{
 		wins: number;
@@ -726,16 +735,32 @@
 					<Users size={14} /> Joueurs <span class="col-badge">{players.length}</span>
 				</div>
 				<div class="chat-col-scroll">
-					{#each players as p (p.socketId)}
+					{#each sortedPlayers as p (p.socketId)}
+						{@const searching = isSearching(p.username)}
+						{@const waitingRoom = searchingRoomOf.get(p.username)}
 						<div class="social-item">
-							<span class="dot" class:idle={p.status === 'idle'} class:busy={p.status !== 'idle'}
+							<span
+								class="dot"
+								class:idle={p.status === 'idle'}
+								class:busy={p.status !== 'idle' && !searching}
+								class:searching
 							></span>
 							<GradeBadge level={p.level} />
-							<span class="social-name" class:me={p.username === $currentUser?.username}>
-								{p.username}
-								{#if p.username === $currentUser?.username}<span class="you">(toi)</span>{/if}
+							<span class="social-who">
+								<span class="social-name" class:me={p.username === $currentUser?.username}>
+									{p.username}
+									{#if p.username === $currentUser?.username}<span class="you">(toi)</span>{/if}
+								</span>
+								{#if searching}<span class="searching-text">Cherche un duel</span>{/if}
 							</span>
-							{#if p.status === 'idle' && p.username !== $currentUser?.username && !createdRoom && !outgoingChallenge}
+							{#if waitingRoom && !createdRoom}
+								<button
+									class="challenge-btn fight-btn"
+									title="Affronter {p.username}"
+									aria-label="Affronter {p.username}"
+									onclick={() => joinGame(waitingRoom)}><Swords size={12} /> Affronter</button
+								>
+							{:else if p.status === 'idle' && p.username !== $currentUser?.username && !createdRoom && !outgoingChallenge}
 								<button
 									class="challenge-btn"
 									title="Défier {p.username}"
@@ -1497,7 +1522,7 @@
 		display: flex;
 		flex-direction: row;
 		gap: 0;
-		max-width: 720px;
+		max-width: 860px;
 		width: 100%;
 		margin: 0 auto;
 		padding: 0;
@@ -1512,7 +1537,7 @@
 		padding: 0.75rem;
 	}
 	.chat-col-side {
-		width: 140px;
+		width: 260px;
 		flex-shrink: 0;
 	}
 	.chat-col-main {
@@ -1615,6 +1640,24 @@
 		letter-spacing: 0.06em;
 		text-transform: uppercase;
 		color: #6870a0;
+	}
+	.social-who {
+		display: flex;
+		flex-direction: column;
+		min-width: 0;
+		flex: 1;
+	}
+	.searching-text {
+		font-size: 0.65rem;
+		color: #ffb547;
+	}
+	.fight-btn {
+		color: #fff4e0;
+		background: rgba(255, 181, 71, 0.18);
+		border-color: rgba(255, 181, 71, 0.6);
+	}
+	.fight-btn:hover {
+		background: rgba(255, 181, 71, 0.32);
 	}
 	.social-name {
 		color: #7080a0;
@@ -1791,6 +1834,16 @@
 	}
 	.dot.busy {
 		background: #ff9800;
+	}
+	.dot.searching {
+		background: #ffb547;
+		box-shadow: 0 0 6px #ffb547;
+		animation: searchPulse 1.2s ease-in-out infinite;
+	}
+	@keyframes searchPulse {
+		50% {
+			opacity: 0.35;
+		}
 	}
 
 	.right-col {

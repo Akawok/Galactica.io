@@ -44,14 +44,6 @@ const defaultItems = [
     sprite: "spaceship-05",
   },
   {
-    name: "Prisma",
-    type: "ship",
-    price: 1200,
-    priceGalactics: 4,
-    description: "Vaisseau irisé.",
-    sprite: "spaceship-06",
-  },
-  {
     name: "Laser basique",
     type: "bullet",
     bulletRole: "primary",

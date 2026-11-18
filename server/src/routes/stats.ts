@@ -18,7 +18,10 @@ export async function statsRoutes(app: FastifyInstance) {
         .populate("inventory");
       if (!user) return reply.code(404).send({ error: "Joueur non trouvé" });
       const inventory = await withImages(
-        (user.inventory as unknown as IItem[]).map((i) => i.toObject()),
+        // An item deleted from the admin can leave a dangling reference for a moment
+        (user.inventory as unknown as (IItem | null)[])
+          .filter((i): i is IItem => i !== null)
+          .map((i) => i.toObject()),
       );
       return reply.send({ user: { ...serializeUserFull(user), inventory } });
     },

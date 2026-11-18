@@ -157,7 +157,9 @@ export const api = {
 			request<{ item: any }>(`/admin/items/${itemId}/images`, {
 				method: 'POST',
 				body: JSON.stringify({ images })
-			})
+			}),
+		deleteItem: (itemId: string) =>
+			post<{ ok: boolean; owners: number }>(`/admin/items/${itemId}/delete`)
 	}
 };
 

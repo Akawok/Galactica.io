@@ -235,7 +235,7 @@ export async function adminRoutes(app: FastifyInstance) {
             bullet: user.activeBullet,
             bulletSecondary: user.activeBulletSecondary,
           },
-          inventory: (user.inventory as any[]).map((i) => ({
+          inventory: (user.inventory as any[]).filter(Boolean).map((i) => ({
             id: String(i._id),
             name: i.name,
             type: i.type,

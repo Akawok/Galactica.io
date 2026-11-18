@@ -4,6 +4,8 @@ import {
   type BulletState,
   type PlayerState,
 } from "./game.service.js";
+import { Item } from "../models/Item.js";
+import { DEFAULT_LOADOUT } from "../models/User.js";
 
 export const BOT_ID_PREFIX = "bot:";
 export const BOT_USER_ID = "bot";
@@ -129,8 +131,15 @@ export interface BotInput {
   rightClick: boolean;
 }
 
-export function botShipFor(playerShip: string): string {
-  return BOT_SHIPS.find((s) => s !== playerShip) ?? BOT_SHIPS[0];
+// Ships can be deleted from the admin, so the bot only picks among those still in the shop
+export async function botShipFor(playerShip: string): Promise<string> {
+  const ships: string[] = await Item.distinct("sprite", { type: "ship" });
+  const others = ships.filter((s) => s !== playerShip);
+  return (
+    BOT_SHIPS.find((s) => others.includes(s)) ??
+    others[0] ??
+    DEFAULT_LOADOUT.activeShip
+  );
 }
 
 export function createBotBrain(difficulty: BotDifficulty): BotBrain {
