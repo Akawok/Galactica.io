@@ -1,30 +1,35 @@
 import { connectDB } from "./config.js";
 import { Item } from "./models/Item.js";
 import { User } from "./models/User.js";
+import { purgeItem } from "./services/item.service.js";
 import mongoose from "mongoose";
 
 await connectDB();
 
+// The shop catalog: running the seed aligns any database (dev or prod) on it
 const defaultItems = [
   {
-    name: "Intercepteur",
+    name: "Spartan",
     type: "ship",
     price: 0,
-    description: "Vaisseau bleu.",
+    priceGalactics: 0,
+    description: "Exécuteur Stellaire",
     sprite: "spaceship-01",
   },
   {
-    name: "Crimson",
+    name: "Ragnarok",
     type: "ship",
     price: 400,
-    description: "Vaisseau rouge.",
+    priceGalactics: 0,
+    description: "La Fureur Céleste",
     sprite: "spaceship-02",
   },
   {
-    name: "Inferno",
+    name: "Manta",
     type: "ship",
     price: 400,
-    description: "Vaisseau orange.",
+    priceGalactics: 0,
+    description: "La Brumeuse",
     sprite: "spaceship-03",
   },
   {
@@ -32,16 +37,48 @@ const defaultItems = [
     type: "ship",
     price: 700,
     priceGalactics: 2,
-    description: "Vaisseau rose.",
+    description: "La Princesse Galactique",
     sprite: "spaceship-04",
   },
   {
-    name: "Solar",
+    name: "Vulcan",
     type: "ship",
     price: 900,
     priceGalactics: 3,
-    description: "Vaisseau doré.",
+    description: "Jugement des Étoiles",
     sprite: "spaceship-05",
+  },
+  {
+    name: "Aurelios",
+    type: "ship",
+    price: 1000,
+    priceGalactics: 3,
+    description: "Gardien des Cieux",
+    sprite: "aurelios",
+  },
+  {
+    name: "Noctua",
+    type: "ship",
+    price: 1000,
+    priceGalactics: 3,
+    description: "Déesse de la nuit",
+    sprite: "noctua",
+  },
+  {
+    name: "Ignis",
+    type: "ship",
+    price: 1500,
+    priceGalactics: 5,
+    description: "Brasier Éternel",
+    sprite: "ignis",
+  },
+  {
+    name: "Vespera",
+    type: "ship",
+    price: 0,
+    priceGalactics: 20,
+    description: "Bzzzzzzz",
+    sprite: "vespera",
   },
   {
     name: "Laser basique",
@@ -60,6 +97,14 @@ const defaultItems = [
     sprite: "bullet2",
   },
 ];
+
+// Items taken out of the game: removed from inventories, loadouts and disk
+const retiredSprites = ["spaceship-06"];
+
+for (const item of await Item.find({ sprite: { $in: retiredSprites } }).lean()) {
+  const owners = await purgeItem(item);
+  console.log(`🗑️  Item retiré: ${item.name} (${owners} inventaire(s) nettoyé(s))`);
+}
 
 await Promise.all(
   defaultItems.map(async (item) => {

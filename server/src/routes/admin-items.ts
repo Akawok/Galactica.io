@@ -3,14 +3,14 @@ import { Item, type ItemType, type BulletRole } from "../models/Item.js";
 import { DEFAULT_LOADOUT, User } from "../models/User.js";
 import { recordAudit } from "../models/AuditLog.js";
 import { BOT_BULLET, BOT_BULLET_SECONDARY } from "../services/bot.service.js";
-import { type LoadoutSlot, unequipFromConnected } from "../sockets/lobby.js";
+import { unequipFromConnected } from "../sockets/lobby.js";
+import { SLOTS_BY_TYPE, purgeItem } from "../services/item.service.js";
 import {
   AssetError,
   MAX_FRAMES,
   MAX_IMAGE_BYTES,
   SPRITE_PATTERN,
   decodeImages,
-  deleteItemImages,
   readImageInfo,
   replaceItemImages,
   withImages,
@@ -64,12 +64,6 @@ const PROTECTED_SPRITES = new Set<string>([
   BOT_BULLET,
   BOT_BULLET_SECONDARY,
 ]);
-
-const SLOTS_BY_TYPE: Record<ItemType, LoadoutSlot[]> = {
-  ship: ["activeShip"],
-  bullet: ["activeBullet", "activeBulletSecondary"],
-  cosmetic: [],
-};
 
 function isFree(item: { price: number; priceGalactics?: number | null }) {
   return item.price === 0 && (item.priceGalactics ?? 0) === 0;
@@ -245,19 +239,10 @@ export async function adminItemsRoutes(app: FastifyInstance) {
           .send({ error: "Item de base du jeu, il ne peut pas être supprimé" });
       }
 
-      await Item.deleteOne({ _id: item._id });
-      const owners = await User.updateMany(
-        { inventory: item._id },
-        { $pull: { inventory: item._id } },
-      );
+      const owners = await purgeItem(item);
       for (const slot of SLOTS_BY_TYPE[item.type]) {
-        await User.updateMany(
-          { [slot]: item.sprite },
-          { $set: { [slot]: DEFAULT_LOADOUT[slot] } },
-        );
         unequipFromConnected(slot, item.sprite);
       }
-      await deleteItemImages(item.type, item.sprite);
 
       await recordAudit({
         action: "item-delete",
@@ -267,11 +252,11 @@ export async function adminItemsRoutes(app: FastifyInstance) {
           itemId: String(item._id),
           sprite: item.sprite,
           name: item.name,
-          owners: owners.modifiedCount,
+          owners,
         },
         ip: req.ip,
       });
-      return reply.send({ ok: true, owners: owners.modifiedCount });
+      return reply.send({ ok: true, owners });
     },
   );
 }

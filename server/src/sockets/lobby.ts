@@ -11,6 +11,7 @@ import {
 } from "./game.js";
 import { ChatMessage } from "../models/ChatMessage.js";
 import { DEFAULT_LOADOUT, User, isMuted } from "../models/User.js";
+import type { LoadoutSlot } from "../services/item.service.js";
 import { recordDesertion, saveGameRecord } from "../services/match.service.js";
 import {
   BOT_DIFFICULTIES,
@@ -921,8 +922,6 @@ export function listOnlinePlayers(): OnlinePlayerView[] {
       p.currentRoomId && rooms.has(p.currentRoomId) ? p.currentRoomId : null,
   }));
 }
-
-export type LoadoutSlot = keyof typeof DEFAULT_LOADOUT;
 
 // Players keep their loadout in memory between games, so a deleted item must go there too
 export function unequipFromConnected(slot: LoadoutSlot, sprite: string) {
