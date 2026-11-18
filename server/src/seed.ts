@@ -9,6 +9,14 @@ await connectDB();
 // The shop catalog: running the seed aligns any database (dev or prod) on it
 const defaultItems = [
   {
+    name: "Big Bang",
+    type: "ship",
+    price: 0,
+    priceGalactics: 0,
+    description: "Le Grand Explorateur",
+    sprite: "bigbang",
+  },
+  {
     name: "Spartan",
     type: "ship",
     price: 0,
