@@ -2,7 +2,8 @@ import { get } from 'svelte/store';
 import { auth } from './stores/auth';
 import type { Attributes } from './shared/attributes';
 
-export const BASE_URL = import.meta.env.VITE_SERVER_URL ?? 'http://localhost:3000';
+// Same origin: Caddy in prod, the Vite proxy in dev (vite.config.ts)
+export const BASE_URL = '/api';
 
 function readCsrfCookie(): string | null {
 	if (typeof document === 'undefined') return null;

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { io } from "socket.io-client";
 import {
   API,
+  SERVER,
   call,
   cookieHeader,
   registerUser,
@@ -13,7 +14,7 @@ const sockets = [];
 
 function connect(jar, { timeout = 5000 } = {}) {
   return new Promise((resolve, reject) => {
-    const socket = io(API, {
+    const socket = io(SERVER, {
       transports: ["websocket"],
       extraHeaders: jar ? { cookie: cookieHeader(jar) } : {},
       reconnection: false,

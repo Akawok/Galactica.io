@@ -4,8 +4,6 @@ import { browser } from '$app/environment';
 import { goto } from '$app/navigation';
 import { auth } from './auth';
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL ?? 'http://localhost:3000';
-
 let socketInstance: Socket | null = null;
 
 // Why the server closed the session, shown on the login page
@@ -13,7 +11,7 @@ export const sessionTerminated = writable<string | null>(null);
 
 export function getSocket(): Socket {
 	if (!socketInstance && browser) {
-		socketInstance = io(SERVER_URL, {
+		socketInstance = io({
 			autoConnect: false,
 			transports: ['websocket'],
 			withCredentials: true

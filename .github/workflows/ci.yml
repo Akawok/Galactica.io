@@ -1,0 +1,121 @@
+# Chaque push et PR : tests du serveur contre une vraie base Mongo, typecheck du client, images de prod construites.
+# Push sur main : images publiées sur GHCR (ghcr.io/akawok/galactica-{server,client}:<sha>) puis, si tout est vert,
+# déploiement (clé SSH qui ne peut lancer que /srv/galactica/deploy.sh <sha>) et vérification du site depuis l'extérieur.
+# Actions figées sur leur commit (dépôt public : une étiquette peut être déplacée), mises à jour par Dependabot.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', '.claude/**']
+  pull_request:
+    paths-ignore: ['**.md', '.claude/**']
+
+# Un nouveau push sur une PR annule l'exécution en cours ; sur main, chaque commit va jusqu'au bout.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    services:
+      mongo:
+        image: mongo:7.0
+        ports: ["27017:27017"]
+    env:
+      MONGO_URI: mongodb://localhost:27017/galactica
+      # Les tests changent X-Forwarded-For (rate limit) et lisent les mails capturés.
+      TRUST_PROXY: "true"
+      CAPTURE_MAILS: "true"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Même version majeure que les images des Dockerfile.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            server/package-lock.json
+            client/package-lock.json
+      - name: Serveur
+        working-directory: server
+        run: |
+          npm ci
+          npm run build
+          export JWT_SECRET=$(openssl rand -hex 32)
+          node dist/index.js > server.log 2>&1 &
+          curl -fsS --retry 30 --retry-delay 1 --retry-all-errors http://localhost:3000/api/health
+          node dist/seed.js
+          npm test || { cat server.log; exit 1; }
+      - name: Client
+        working-directory: client
+        run: |
+          npm ci
+          npm run check
+
+  # Sur une PR : construites sans être publiées (une erreur de build se voit avant la fusion).
+  image:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        app: [server, client]
+    permissions:
+      contents: read
+      packages: write
+    env:
+      PUBLISH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - if: env.PUBLISH == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ matrix.app }}
+          push: ${{ env.PUBLISH == 'true' }}
+          tags: ghcr.io/akawok/galactica-${{ matrix.app }}:${{ github.sha }}
+          # Lie l'image au dépôt (même visibilité, visible dans « Packages »).
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          # Sans attestation : une seule version par commit dans GHCR, ce qui garde le nettoyage simple.
+          provenance: false
+          cache-from: type=gha,scope=${{ matrix.app }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.app }}
+      # Garde les 10 dernières images (versions où l'on peut revenir), supprime les plus anciennes.
+      - if: env.PUBLISH == 'true'
+        uses: actions/delete-package-versions@e5bc658cc4c965c472efe991f8beea3981499c55 # v5.0.0
+        with:
+          package-name: galactica-${{ matrix.app }}
+          package-type: container
+          min-versions-to-keep: 10
+
+  deploy:
+    needs: [test, image]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    concurrency: deploy
+    environment:
+      name: production
+      url: https://galactica.natolive.fr
+    steps:
+      - name: Déploie sur le serveur
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/deploy nathan@57.129.174.3 ${{ github.sha }}
+      # Depuis l'extérieur : DNS, certificat, Caddy, client et API.
+      - name: Vérifie le site
+        run: |
+          curl -fsS --retry 5 --retry-delay 3 --retry-all-errors https://galactica.natolive.fr/api/health
+          curl -fsS -o /dev/null https://galactica.natolive.fr/

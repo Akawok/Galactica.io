@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { io } from "socket.io-client";
 import {
   API,
+  SERVER,
   call,
   cookieHeader,
   registerUser,
@@ -47,7 +48,7 @@ function as(session, path, body, method = "POST") {
 
 function connect(jar) {
   return new Promise((resolve, reject) => {
-    const socket = io(API, {
+    const socket = io(SERVER, {
       transports: ["websocket"],
       extraHeaders: { cookie: cookieHeader(jar) },
       reconnection: false,
