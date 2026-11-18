@@ -64,11 +64,18 @@ function resolveJwtSecret(): string {
 
 export const isProduction = process.env.NODE_ENV === "production";
 
+// CLIENT_URL: allowed origins, comma-separated (domain + direct IP access); the first one goes in emails.
+const clientUrls = (process.env.CLIENT_URL ?? "http://localhost:5173")
+  .split(",")
+  .map((url) => url.trim())
+  .filter(Boolean);
+
 export const config = {
   mongoUri: process.env.MONGO_URI ?? "mongodb://localhost:27017/galactica",
   jwtSecret: resolveJwtSecret(),
   port: Number(process.env.PORT ?? 3000),
-  clientUrl: process.env.CLIENT_URL ?? "http://localhost:5173",
+  clientUrl: clientUrls[0],
+  clientUrls,
   tokenTTL: process.env.TOKEN_TTL ?? "12h",
   // Item images live on disk, one folder per item: <assetsDir>/spaceships/<sprite>/f1.png
   assetsDir: resolve(process.env.ASSETS_DIR ?? resolve(__dirname, "../assets")),

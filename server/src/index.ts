@@ -65,7 +65,7 @@ await app.register(fastifyHelmet, {
       scriptSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
       imgSrc: ["'self'", "data:", "blob:"],
-      connectSrc: ["'self'", config.clientUrl],
+      connectSrc: ["'self'", ...config.clientUrls],
       objectSrc: ["'none'"],
       frameAncestors: ["'none'"],
       baseUri: ["'self'"],
@@ -81,7 +81,7 @@ await app.register(fastifyHelmet, {
 await app.register(fastifyCookie);
 
 await app.register(fastifyCors, {
-  origin: config.clientUrl,
+  origin: config.clientUrls,
   credentials: true,
   methods: ["GET", "POST", "PATCH"],
   allowedHeaders: ["Content-Type", "Authorization", "x-csrf-token"],
@@ -185,7 +185,7 @@ await app.register(
 
 const io = new Server(httpServer, {
   cors: {
-    origin: config.clientUrl,
+    origin: config.clientUrls,
     methods: ["GET", "POST"],
     credentials: true,
   },
@@ -195,7 +195,7 @@ const io = new Server(httpServer, {
   // with the player's cookie. Clients without an Origin header are not browsers.
   allowRequest: (req, callback) => {
     const origin = req.headers.origin;
-    callback(null, !origin || origin === config.clientUrl);
+    callback(null, !origin || config.clientUrls.includes(origin));
   },
   maxHttpBufferSize: 8 * 1024,
   pingTimeout: 20_000,

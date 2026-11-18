@@ -1,6 +1,5 @@
 import { randomBytes, timingSafeEqual } from "crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { isProduction } from "../config.js";
 
 export const SESSION_COOKIE = "galactica_session";
 export const CSRF_COOKIE = "galactica_csrf";
@@ -10,10 +9,13 @@ const SESSION_MAX_AGE_S = 12 * 60 * 60;
 
 export function issueSession(reply: FastifyReply, token: string) {
   const csrfToken = randomBytes(32).toString("base64url");
+  // Secure only over HTTPS: the http://<ip>:<port> access would otherwise never get its cookies.
+  // Behind Caddy, trustProxy makes `protocol` follow X-Forwarded-Proto.
+  const secure = reply.request.protocol === "https";
 
   reply.setCookie(SESSION_COOKIE, token, {
     httpOnly: true,
-    secure: isProduction,
+    secure,
     sameSite: "lax",
     path: "/",
     maxAge: SESSION_MAX_AGE_S,
@@ -21,7 +23,7 @@ export function issueSession(reply: FastifyReply, token: string) {
 
   reply.setCookie(CSRF_COOKIE, csrfToken, {
     httpOnly: false,
-    secure: isProduction,
+    secure,
     sameSite: "lax",
     path: "/",
     maxAge: SESSION_MAX_AGE_S,
