@@ -51,6 +51,9 @@ const EVENT_LIMITS: Record<string, { max: number; windowMs: number }> = {
   "game:create": { max: 10, windowMs: 60_000 },
   "game:quickplay": { max: 10, windowMs: 60_000 },
   "game:rematch": { max: 20, windowMs: 60_000 },
+  "game:challenge": { max: 10, windowMs: 60_000 },
+  "game:challengeAnswer": { max: 20, windowMs: 60_000 },
+  "game:challengeCancel": { max: 20, windowMs: 60_000 },
   "game:training": { max: 10, windowMs: 60_000 },
   "game:cancel": { max: 20, windowMs: 60_000 },
   "game:join": { max: 20, windowMs: 60_000 },
@@ -195,6 +198,7 @@ function openRoom(
   };
   rooms.set(roomId, room);
   for (const member of members) {
+    cancelChallengesOf(io, member.socketId);
     io.sockets.sockets.get(member.socketId)?.join(roomId);
     member.status = "in-game";
     member.currentRoomId = roomId;
@@ -233,6 +237,7 @@ async function joinDuelRoom(
     return;
   }
 
+  cancelChallengesOf(io, socket.id);
   waitingPlayers.push(socket.id);
   room.playerUserIds?.add(player.userId);
   room.waitingPlayers = waitingPlayers;
@@ -328,17 +333,29 @@ function cancelRematchesOf(io: Server, socketId: string) {
 }
 
 async function startRematch(io: Server, offer: RematchOffer, players: ConnectedPlayer[]) {
-  const difficulty = offer.difficulty;
-  const full = difficulty
-    ? rooms.size - publicRooms().length >= MAX_TRAINING_ROOMS
-    : publicRooms().length >= MAX_TOTAL_ROOMS;
-  if (full) {
+  await launchMatch(io, players, offer.difficulty, () => {
     for (const p of players) {
       io.sockets.sockets.get(p.socketId)?.emit("game:rematchCancelled", {
         roomId: offer.roomId,
         username: null,
       });
     }
+  });
+}
+
+// Starts a match straight away between players who all agreed to it, against the bot when a
+// difficulty is given
+async function launchMatch(
+  io: Server,
+  players: ConnectedPlayer[],
+  difficulty: BotDifficulty | undefined,
+  onServerFull: () => void,
+) {
+  const full = difficulty
+    ? rooms.size - publicRooms().length >= MAX_TRAINING_ROOMS
+    : publicRooms().length >= MAX_TOTAL_ROOMS;
+  if (full) {
+    onServerFull();
     return;
   }
 
@@ -349,7 +366,7 @@ async function startRematch(io: Server, offer: RematchOffer, players: ConnectedP
   try {
     profiles = await Promise.all(players.map((p) => loadPlayerStats(p.userId)));
   } catch (err) {
-    console.error("[game:rematch] erreur chargement loadout:", err);
+    console.error("[launchMatch] erreur chargement loadout:", err);
     io.to(roomId).emit("game:cancelled", { roomId });
     teardownRoom(io, room);
     return;
@@ -382,6 +399,45 @@ async function startRematch(io: Server, offer: RematchOffer, players: ConnectedP
       : undefined,
   );
   broadcastLobbyState(io);
+}
+
+// A player can challenge an idle player directly; the duel starts once the target accepts
+const CHALLENGE_TTL_MS = 30_000;
+
+interface Challenge {
+  id: string;
+  fromSocketId: string;
+  toSocketId: string;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+const challenges = new Map<string, Challenge>();
+
+function findChallenge(predicate: (c: Challenge) => boolean): Challenge | undefined {
+  for (const c of challenges.values()) if (predicate(c)) return c;
+  return undefined;
+}
+
+// Both sides learn why the challenge is over: declined, cancelled, expired or unavailable
+function endChallenge(io: Server, challenge: Challenge, reason: string) {
+  clearTimeout(challenge.timer);
+  challenges.delete(challenge.id);
+  const from = connectedPlayers.get(challenge.fromSocketId)?.username ?? null;
+  const to = connectedPlayers.get(challenge.toSocketId)?.username ?? null;
+  for (const id of [challenge.fromSocketId, challenge.toSocketId]) {
+    io.sockets.sockets.get(id)?.emit("game:challengeEnded", {
+      id: challenge.id,
+      reason,
+      from,
+      to,
+    });
+  }
+}
+
+function cancelChallengesOf(io: Server, socketId: string) {
+  for (const c of Array.from(challenges.values())) {
+    if (c.fromSocketId === socketId || c.toSocketId === socketId) endChallenge(io, c, "unavailable");
+  }
 }
 
 // Single exit path for a room: stops its timers, frees every member and refreshes the lobby.
@@ -552,6 +608,74 @@ export function registerLobbySocket(io: Server, socket: Socket) {
     createDuelRoom(io, socket, player);
   });
 
+  guard(socket, "game:challenge", (data: { socketId?: string }) => {
+    const player = connectedPlayers.get(socket.id);
+    const targetId = typeof data?.socketId === "string" ? data.socketId : null;
+    const target = targetId ? connectedPlayers.get(targetId) : undefined;
+    if (!player || player.status !== "idle" || !target || !targetId) return;
+    if (target.userId === player.userId) return;
+    if (target.status !== "idle") {
+      socket.emit("game:error", { message: `${target.username} est déjà occupé` });
+      return;
+    }
+    if (findChallenge((c) => c.fromSocketId === socket.id)) {
+      socket.emit("game:error", { message: "Tu as déjà un défi en attente" });
+      return;
+    }
+    if (findChallenge((c) => c.toSocketId === targetId || c.fromSocketId === targetId)) {
+      socket.emit("game:error", { message: `${target.username} a déjà un défi en cours` });
+      return;
+    }
+
+    const id = randomBytes(8).toString("hex");
+    const challenge: Challenge = {
+      id,
+      fromSocketId: socket.id,
+      toSocketId: targetId,
+      timer: setTimeout(() => {
+        const c = challenges.get(id);
+        if (c) endChallenge(io, c, "expired");
+      }, CHALLENGE_TTL_MS),
+    };
+    challenges.set(id, challenge);
+    socket.emit("game:challengeSent", { id, to: target.username });
+    io.sockets.sockets.get(targetId)?.emit("game:challenged", {
+      id,
+      from: player.username,
+      level: player.level,
+    });
+  });
+
+  guard(socket, "game:challengeCancel", (data: { id?: string }) => {
+    const challenge = typeof data?.id === "string" ? challenges.get(data.id) : undefined;
+    if (!challenge || challenge.fromSocketId !== socket.id) return;
+    endChallenge(io, challenge, "cancelled");
+  });
+
+  guard(socket, "game:challengeAnswer", async (data: { id?: string; accept?: boolean }) => {
+    const challenge = typeof data?.id === "string" ? challenges.get(data.id) : undefined;
+    if (!challenge || challenge.toSocketId !== socket.id) return;
+    if (data.accept !== true) {
+      endChallenge(io, challenge, "declined");
+      return;
+    }
+    const from = connectedPlayers.get(challenge.fromSocketId);
+    const to = connectedPlayers.get(challenge.toSocketId);
+    if (from?.status !== "idle" || to?.status !== "idle") {
+      endChallenge(io, challenge, "unavailable");
+      return;
+    }
+    clearTimeout(challenge.timer);
+    challenges.delete(challenge.id);
+    await launchMatch(io, [from, to], undefined, () => {
+      for (const id of [challenge.fromSocketId, challenge.toSocketId]) {
+        io.sockets.sockets.get(id)?.emit("game:error", {
+          message: "Serveur saturé, réessaie plus tard",
+        });
+      }
+    });
+  });
+
   // Joins the oldest duel waiting for an opponent, or opens one when nobody is waiting
   guard(socket, "game:quickplay", async () => {
     const player = connectedPlayers.get(socket.id);
@@ -706,6 +830,7 @@ export function registerLobbySocket(io: Server, socket: Socket) {
 
   socket.on("disconnect", () => {
     cancelRematchesOf(io, socket.id);
+    cancelChallengesOf(io, socket.id);
     const player = connectedPlayers.get(socket.id);
     if (player) {
       if (player.currentRoomId)

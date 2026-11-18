@@ -75,6 +75,16 @@
 	let chatInput = $state('');
 	let socket: Socket | null = null;
 	let createdRoom = $state<string | null>(null);
+	let incomingChallenge = $state<{ id: string; from: string; level?: number } | null>(null);
+	let outgoingChallenge = $state<{ id: string; to: string } | null>(null);
+	const searchingRooms = $derived(
+		rooms.filter(
+			(r) =>
+				r.status === 'waiting' &&
+				r.players.length === 1 &&
+				r.players[0].username !== $currentUser?.username
+		)
+	);
 	let inventory = $state<InventoryItem[]>([]);
 	let fullStats = $state<{
 		wins: number;
@@ -256,6 +266,22 @@
 	const onChatBlocked = ({ reason }: { reason: string }) => {
 		chatError = reason;
 	};
+	const onChallengeSent = (data: { id: string; to: string }) => {
+		outgoingChallenge = data;
+		lobbyError = null;
+	};
+	const onChallenged = (data: { id: string; from: string; level?: number }) => {
+		incomingChallenge = data;
+	};
+	const onChallengeEnded = (data: { id: string; reason: string; to: string | null }) => {
+		if (incomingChallenge?.id === data.id) incomingChallenge = null;
+		if (outgoingChallenge?.id !== data.id) return;
+		outgoingChallenge = null;
+		const who = data.to ?? 'Ton adversaire';
+		if (data.reason === 'declined') lobbyError = `${who} a refusé ton défi`;
+		else if (data.reason === 'expired') lobbyError = `${who} n'a pas répondu à ton défi`;
+		else if (data.reason === 'unavailable') lobbyError = `${who} n'est plus disponible`;
+	};
 
 	onMount(async () => {
 		if (!$currentUser) return;
@@ -269,6 +295,9 @@
 		socket.on(GAME_EVENT.SPECTATING, onSpectating);
 		socket.on(GAME_EVENT.ERROR, onGameError);
 		socket.on('chat:blocked', onChatBlocked);
+		socket.on(GAME_EVENT.CHALLENGE_SENT, onChallengeSent);
+		socket.on(GAME_EVENT.CHALLENGED, onChallenged);
+		socket.on(GAME_EVENT.CHALLENGE_ENDED, onChallengeEnded);
 		// A reconnection gets a new socket id that the server does not know yet
 		socket.on('connect', joinLobby);
 		if (socket.connected) joinLobby();
@@ -325,11 +354,40 @@
 		socket?.off(GAME_EVENT.SPECTATING, onSpectating);
 		socket?.off(GAME_EVENT.ERROR, onGameError);
 		socket?.off('chat:blocked', onChatBlocked);
+		socket?.off(GAME_EVENT.CHALLENGE_SENT, onChallengeSent);
+		socket?.off(GAME_EVENT.CHALLENGED, onChallenged);
+		socket?.off(GAME_EVENT.CHALLENGE_ENDED, onChallengeEnded);
 		socket?.off('connect', joinLobby);
 		hoveredItem = null;
 	});
 
+	// Starting anything else withdraws our pending challenge, without telling us it was refused
+	function withdrawChallenge() {
+		if (!outgoingChallenge) return;
+		socket?.emit(GAME_EVENT.CHALLENGE_CANCEL, { id: outgoingChallenge.id });
+		outgoingChallenge = null;
+	}
+
+	function challenge(socketId: string) {
+		lobbyError = null;
+		socket?.emit(GAME_EVENT.CHALLENGE, { socketId });
+	}
+
+	function answerChallenge(accept: boolean) {
+		if (!incomingChallenge) return;
+		withdrawChallenge();
+		socket?.emit(GAME_EVENT.CHALLENGE_ANSWER, { id: incomingChallenge.id, accept });
+		incomingChallenge = null;
+	}
+
+	function joinGame(roomId: string) {
+		withdrawChallenge();
+		lobbyError = null;
+		socket?.emit(GAME_EVENT.JOIN, { roomId });
+	}
+
 	function play() {
+		withdrawChallenge();
 		lobbyError = null;
 		socket?.emit(GAME_EVENT.QUICKPLAY);
 	}
@@ -343,6 +401,7 @@
 	let choosingLevel = $state(false);
 
 	function startTraining(difficulty: (typeof BOT_LEVELS)[number]['difficulty']) {
+		withdrawChallenge();
 		choosingLevel = false;
 		lobbyError = null;
 		socket?.emit(GAME_EVENT.TRAINING, { difficulty });
@@ -605,6 +664,28 @@
 		</div>
 
 		<div class="hero-actions">
+			{#if incomingChallenge}
+				<div class="challenge-card" role="alert">
+					<span class="challenge-text">
+						<Swords size={16} />
+						<strong>{incomingChallenge.from}</strong>
+						{#if incomingChallenge.level}<GradeBadge level={incomingChallenge.level} />{/if}
+						te défie !
+					</span>
+					<div class="challenge-buttons">
+						<button class="btn btn-primary btn-sm" onclick={() => answerChallenge(true)}>Accepter</button>
+						<button class="btn btn-secondary btn-sm" onclick={() => answerChallenge(false)}>Refuser</button>
+					</div>
+				</div>
+			{/if}
+			{#if outgoingChallenge}
+				<div class="challenge-card">
+					<span class="challenge-text">
+						<Clock size={14} /> Défi envoyé à <strong>{outgoingChallenge.to}</strong>…
+					</span>
+					<button class="btn btn-secondary btn-sm" onclick={withdrawChallenge}>Annuler</button>
+				</div>
+			{/if}
 			<div class="primary-cta">
 				{#if createdRoom}
 					<button class="btn btn-hero" disabled><Clock size={14} /> Recherche…</button>
@@ -654,6 +735,14 @@
 								{p.username}
 								{#if p.username === $currentUser?.username}<span class="you">(toi)</span>{/if}
 							</span>
+							{#if p.status === 'idle' && p.username !== $currentUser?.username && !createdRoom && !outgoingChallenge}
+								<button
+									class="challenge-btn"
+									title="Défier {p.username}"
+									aria-label="Défier {p.username}"
+									onclick={() => challenge(p.socketId)}><Swords size={12} /> Défier</button
+								>
+							{/if}
 						</div>
 					{:else}
 						<p class="empty-text">Personne en ligne</p>
@@ -880,7 +969,8 @@
 
 		<section class="panel duels-panel">
 			<h2>
-				<Swords size={14} /> Duels en cours <span class="col-badge">{liveDuels.length}</span>
+				<Swords size={14} /> Duels
+				<span class="col-badge">{searchingRooms.length + liveDuels.length}</span>
 			</h2>
 			<div class="duels-list">
 				{#if createdRoom}
@@ -889,6 +979,22 @@
 						<button class="btn btn-danger btn-sm" onclick={cancelGame}>Annuler</button>
 					</div>
 				{/if}
+				{#if searchingRooms.length}
+					<p class="duels-subtitle">En recherche</p>
+					{#each searchingRooms as room (room.roomId)}
+						<div class="duel-item">
+							<span class="room-players">{room.players[0].username}</span>
+							{#if !createdRoom}
+								<div class="room-actions">
+									<button class="btn btn-primary btn-sm" onclick={() => joinGame(room.roomId)}
+										><Swords size={14} /> Affronter</button
+									>
+								</div>
+							{/if}
+						</div>
+					{/each}
+				{/if}
+				{#if liveDuels.length}<p class="duels-subtitle">En cours</p>{/if}
 				{#each liveDuels as room (room.roomId)}
 					<div class="duel-item">
 						<span class="room-players">{room.players.map((p) => p.username).join(' vs ')}</span>
@@ -899,7 +1005,7 @@
 						</div>
 					</div>
 				{:else}
-					{#if !createdRoom}<p class="empty-text">Aucun duel en cours</p>{/if}
+					{#if !createdRoom && !searchingRooms.length}<p class="empty-text">Aucun duel en cours</p>{/if}
 				{/each}
 			</div>
 		</section>
@@ -1462,6 +1568,53 @@
 		align-items: center;
 		gap: 0.4rem;
 		font-size: 0.78rem;
+	}
+	.challenge-btn {
+		margin-left: auto;
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
+		padding: 0.15rem 0.45rem;
+		font-size: 0.7rem;
+		font-weight: 600;
+		color: #e0e8ff;
+		background: rgba(77, 217, 255, 0.12);
+		border: 1px solid rgba(77, 217, 255, 0.4);
+		border-radius: 8px;
+		cursor: pointer;
+	}
+	.challenge-btn:hover {
+		background: rgba(77, 217, 255, 0.25);
+	}
+	.challenge-card {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex-wrap: wrap;
+		gap: 0.75rem;
+		padding: 0.6rem 1rem;
+		background: rgba(20, 26, 60, 0.85);
+		border: 1px solid rgba(77, 217, 255, 0.5);
+		border-radius: 12px;
+		color: #e0e8ff;
+		font-size: 0.9rem;
+	}
+	.challenge-text {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+	}
+	.challenge-buttons {
+		display: flex;
+		gap: 0.5rem;
+	}
+	.duels-subtitle {
+		margin: 0.4rem 0 0.2rem;
+		font-size: 0.68rem;
+		font-weight: 700;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+		color: #6870a0;
 	}
 	.social-name {
 		color: #7080a0;

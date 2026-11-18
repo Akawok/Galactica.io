@@ -47,6 +47,13 @@ const RETICLE_COLOR = 0x4dd9ff;
 const RETICLE_LOCK_COLOR = 0xff4d4d;
 const MISSILE_READY_COLOR = 0xffa040;
 const HIT_MARKER_MS = 160;
+const ARROW_KEYS: Record<string, string> = {
+	arrowup: 'z',
+	arrowdown: 's',
+	arrowleft: 'q',
+	arrowright: 'd'
+};
+const FIRE_KEY = ' ';
 const ZONE_COLOR = 0xff3050;
 const ZONE_WARNING_MS = 5000;
 const ZONE_TICK_SECONDS = 3;
@@ -259,8 +266,27 @@ export class GameEngine {
 	private scoreText!: Text;
 	private hudContainer!: Container;
 
-	private onKeyDown = (e: KeyboardEvent) => this.keys.add(e.key.toLowerCase());
+	private onKeyDown = (e: KeyboardEvent) => {
+		// Typing in a field (volume slider, future chat) must not steer the ship
+		if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+		const key = e.key.toLowerCase();
+		// Arrows and space would otherwise scroll the page or press the focused button
+		if (key in ARROW_KEYS || key === FIRE_KEY) e.preventDefault();
+		this.keys.add(key);
+	};
 	private onKeyUp = (e: KeyboardEvent) => this.keys.delete(e.key.toLowerCase());
+
+	// Arrows are sent as the movement keys the server knows, so both layouts behave the same
+	private heldKeys(): string[] {
+		const keys = new Set<string>();
+		for (const key of this.keys) keys.add(ARROW_KEYS[key] ?? key);
+		keys.delete(FIRE_KEY);
+		return Array.from(keys);
+	}
+
+	private isFiring(): boolean {
+		return this.leftClick || this.keys.has(FIRE_KEY);
+	}
 	private onBlur = () => {
 		this.keys.clear();
 		this.leftClick = false;
@@ -473,7 +499,7 @@ export class GameEngine {
 	private step() {
 		this.inputSeq++;
 		this.updateMouseAngle();
-		const keys = Array.from(this.keys);
+		const keys = this.heldKeys();
 		const dash = this.predictDash(keys, this.inputSeq);
 		const input: PredictedInput = { keys, mouseAngle: this.mouseAngle, dash };
 
@@ -481,7 +507,7 @@ export class GameEngine {
 			seq: this.inputSeq,
 			keys,
 			mouseAngle: this.mouseAngle,
-			leftClick: this.leftClick,
+			leftClick: this.isFiring(),
 			rightClick: this.rightClick,
 			rt: Math.round(this.renderTime())
 		});
@@ -527,7 +553,7 @@ export class GameEngine {
 		const sin = Math.sin(this.predicted.angle);
 
 		if (
-			this.leftClick &&
+			this.isFiring() &&
 			clock - this.lastNormalShotClock >= shotInterval(this.myLoadout.primaryCooldown)
 		) {
 			this.lastNormalShotClock = nextShotClock(
@@ -1416,8 +1442,8 @@ export class GameEngine {
 		for (const [id, v] of this.playerVisuals) {
 			let moving = false;
 			if (this.isLocal(id)) {
-				const k = this.keys;
-				moving = k.has('z') || k.has('w') || k.has('s') || k.has('q') || k.has('a') || k.has('d');
+				const k = this.heldKeys();
+				moving = ['z', 'w', 's', 'q', 'a', 'd'].some((key) => k.includes(key));
 				this.setShipMoving(v, moving);
 			} else {
 				moving = v.isMoving;
