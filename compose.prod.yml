@@ -1,7 +1,7 @@
 # Production (serveur nathan) : lancé par /srv/galactica/deploy.sh après chaque push sur main.
 # Caddy (stack à part, /srv/caddy) sert https://galactica.natolive.fr via le réseau externe `proxy` :
 # /api/* et /socket.io/* → galactica-api, le reste → galactica (client statique).
-# Accès direct sans domaine : http://57.129.174.3:8084 (même routage).
+# Accès direct sans domaine : http://57.129.174.3:9000 (même routage).
 # Les noms sur `proxy` sont partagés entre projets, d'où les alias préfixés.
 # `.env` à côté de ce fichier (non versionné) : JWT_SECRET, IMAGE_TAG.
 name: galactica
@@ -25,8 +25,8 @@ services:
       NODE_ENV: production
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET manquant dans .env}
       MONGO_URI: mongodb://mongo:27017/galactica
-      # Domaine + accès direct par IP (HTTP, port 8084 du Caddy partagé) ; le premier sert aux liens des mails.
-      CLIENT_URL: https://galactica.natolive.fr,http://57.129.174.3:8084
+      # Domaine + accès direct par IP (HTTP, port 9000 du Caddy partagé) ; le premier sert aux liens des mails.
+      CLIENT_URL: https://galactica.natolive.fr,http://57.129.174.3:9000
     # Images d'items (uploads de l'admin) : le volume est rempli depuis l'image au premier démarrage.
     volumes: [assets:/app/assets]
     depends_on:
