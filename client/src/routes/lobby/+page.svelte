@@ -1350,6 +1350,7 @@
 	}
 
 	.center-col {
+		--hero-h: clamp(240px, calc(100vh - 430px), 420px);
 		display: flex;
 		flex-direction: column;
 		justify-content: space-between;
@@ -1364,21 +1365,21 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		min-height: 420px;
+		min-height: var(--hero-h);
 		position: relative;
 	}
 
 	.ship-display {
 		position: relative;
 		width: 100%;
-		height: 380px;
+		height: calc(var(--hero-h) - 40px);
 		display: flex;
 		align-items: center;
 		justify-content: center;
 	}
 	.ship-img {
-		width: 280px;
-		height: 280px;
+		width: calc(var(--hero-h) * 2 / 3);
+		height: calc(var(--hero-h) * 2 / 3);
 		filter: drop-shadow(0 0 30px rgba(77, 217, 255, 0.55))
 			drop-shadow(0 0 60px rgba(123, 63, 245, 0.35));
 		position: relative;

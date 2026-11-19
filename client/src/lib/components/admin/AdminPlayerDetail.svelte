@@ -20,6 +20,7 @@
 	import Gavel from '@lucide/svelte/icons/gavel';
 	import Shield from '@lucide/svelte/icons/shield';
 	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
+	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
 
 	let {
 		userId,
@@ -59,6 +60,7 @@
 	let newRole = $state<Role>('user');
 	let res = $state({ points: 0, galactics: 0, level: 1, xp: 0 });
 	let deleteConfirm = $state('');
+	let resetConfirm = $state('');
 
 	const user = $derived(detail?.user);
 	const isSelf = $derived(user?.id === $currentUser?.id);
@@ -139,6 +141,13 @@
 				? 'Enregistré. Ses caractéristiques ont été remises à zéro (trop de points pour ce niveau).'
 				: undefined;
 		}, 'Ressources enregistrées.');
+	}
+
+	function resetProgress() {
+		run(async () => {
+			await api.admin.resetProgress(userId, resetConfirm);
+			resetConfirm = '';
+		}, 'Compte remis à zéro. Le joueur a été déconnecté.');
 	}
 
 	async function deleteAccount() {
@@ -464,6 +473,23 @@
 		</div>
 
 		{#if isAdmin && !isSelf && user.role !== 'admin'}
+			<div class="block danger-zone">
+				<h3><RotateCcw size={14} /> Remettre le compte à zéro</h3>
+				<p class="a-muted">
+					Il repart comme un nouveau joueur : niveau 1, plus de crédits ni de Galactics, hangar vidé
+					sauf les items gratuits, caractéristiques, statistiques et historique de parties effacés. Il
+					garde son pseudo, son email et son mot de passe. Recopie <strong>{user.username}</strong> pour confirmer.
+				</p>
+				<div class="inline">
+					<input bind:value={resetConfirm} placeholder={user.username} aria-label="Confirmation de la remise à zéro" />
+					<button
+						class="btn btn-danger btn-sm"
+						disabled={busy || resetConfirm !== user.username}
+						onclick={resetProgress}>Remettre à zéro</button
+					>
+				</div>
+			</div>
+
 			<div class="block danger-zone">
 				<h3><TriangleAlert size={14} /> Supprimer le compte</h3>
 				<p class="a-muted">

@@ -138,6 +138,8 @@ export const api = {
 		resetAttributes: (userId: string) => post(`/admin/users/${userId}/reset-attributes`),
 		verifyEmail: (userId: string) => post(`/admin/users/${userId}/verify-email`),
 		sendReset: (userId: string) => post(`/admin/users/${userId}/send-reset`),
+		resetProgress: (userId: string, confirm: string) =>
+			post(`/admin/users/${userId}/reset-progress`, { confirm }),
 		deleteUser: (userId: string, confirm: string) =>
 			post(`/admin/users/${userId}/delete`, { confirm }),
 		liveGames: () => request<{ rooms: LiveRoom[]; online: OnlinePlayer[] }>('/admin/games/live'),

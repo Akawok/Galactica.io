@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import mongoose from "mongoose";
-import { User, serializeUser, type UserRole } from "../models/User.js";
+import { DEFAULT_LOADOUT, User, serializeUser, type UserRole } from "../models/User.js";
+import { Item } from "../models/Item.js";
 import { ChatMessage } from "../models/ChatMessage.js";
 import { Game } from "../models/Game.js";
 import { Token } from "../models/Token.js";
@@ -562,6 +563,96 @@ export async function adminRoutes(app: FastifyInstance) {
       const token = await issueToken(user._id, "password-reset");
       await sendPasswordReset(user.email, token);
       await audit(req, "send-reset", user);
+      return reply.send({ ok: true });
+    },
+  );
+
+  app.post<{ Params: { userId: string }; Body: { confirm: string } }>(
+    "/admin/users/:userId/reset-progress",
+    {
+      ...admin,
+      schema: {
+        params: objectIdParam,
+        body: {
+          type: "object",
+          required: ["confirm"],
+          additionalProperties: false,
+          properties: { confirm: { type: "string", maxLength: 40 } },
+        },
+      },
+    },
+    async (req, reply) => {
+      const { userId } = req.params;
+      if (userId === req.account!.id) {
+        return reply
+          .code(400)
+          .send({ error: "Impossible de remettre son propre compte à zéro" });
+      }
+      const user = await User.findById(userId)
+        .select("username role level points galactics inventory")
+        .lean();
+      if (!user) return reply.code(404).send({ error: "Joueur non trouvé" });
+      if (user.role === "admin") {
+        return reply
+          .code(403)
+          .send({ error: "Retire d'abord le rôle admin de ce compte" });
+      }
+      if (req.body.confirm !== user.username) {
+        return reply
+          .code(400)
+          .send({ error: "Recopie exactement le pseudo pour confirmer" });
+      }
+
+      const freeItems = await Item.find({
+        price: 0,
+        priceGalactics: { $in: [0, null] },
+      })
+        .select("_id")
+        .lean();
+
+      forceLogout(userId, "Ton compte a été remis à zéro, reconnecte-toi");
+      await User.updateOne(
+        { _id: user._id },
+        {
+          $set: {
+            level: 1,
+            xp: 0,
+            points: 0,
+            galactics: 0,
+            inventory: freeItems.map((i) => i._id),
+            ...DEFAULT_LOADOUT,
+            attributes: emptyAttributes(),
+            respecCount: 0,
+            stats: {
+              wins: 0,
+              losses: 0,
+              totalGames: 0,
+              currentStreak: 0,
+              bestStreak: 0,
+              desertions: 0,
+            },
+            botXp: { day: null, gained: 0 },
+          },
+        },
+      );
+
+      const detachedId = new mongoose.Types.ObjectId();
+      const games = await Game.updateMany(
+        { "players.userId": user._id },
+        { $set: { "players.$[me].userId": detachedId } },
+        { arrayFilters: [{ "me.userId": user._id }] },
+      );
+      await Game.updateMany({ winner: user._id }, { $set: { winner: detachedId } });
+
+      await audit(req, "reset-progress", user, {
+        before: {
+          level: user.level ?? 1,
+          points: user.points ?? 0,
+          galactics: user.galactics ?? 0,
+          items: user.inventory?.length ?? 0,
+          games: games.modifiedCount,
+        },
+      });
       return reply.send({ ok: true });
     },
   );
