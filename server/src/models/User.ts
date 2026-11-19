@@ -43,6 +43,7 @@ export interface IUser extends Document {
     bestStreak: number;
     desertions: number;
   };
+  botXp: { day: Date | null; gained: number };
   createdAt: Date;
 }
 
@@ -98,6 +99,10 @@ const UserSchema = new Schema<IUser>({
     currentStreak: { type: Number, default: 0 },
     bestStreak: { type: Number, default: 0 },
     desertions: { type: Number, default: 0 },
+  },
+  botXp: {
+    day: { type: Date, default: null },
+    gained: { type: Number, default: 0 },
   },
   createdAt: { type: Date, default: Date.now },
 });

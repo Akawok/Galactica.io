@@ -23,6 +23,10 @@ export const GAME_CONFIG = {
   DESERTION_PENALTY_CAP: 0.5,
   XP_PER_WIN: 120,
   XP_PER_LOSS: 40,
+  // Beating the bot pays far less than a real duel, and only up to a daily cap, so playing
+  // solo keeps a player moving without ever beating PvP as a way to level up
+  BOT_XP_PER_WIN: { facile: 15, normal: 30, difficile: 50 } as Record<BotDifficulty, number>,
+  BOT_XP_DAILY_CAP: 300,
   // Daily anti-farming counters reset at midnight in this zone, the same moment for everyone
   DAILY_RESET_TIMEZONE: "Europe/Paris",
   // Anti-farming: wins over the same opponent since the daily reset keep full rewards up to
@@ -289,7 +293,7 @@ export interface RoomState {
   intervalId?: ReturnType<typeof setInterval>;
   nextRoundTimeout?: ReturnType<typeof setTimeout>;
   waitingPlayers?: string[];
-  // Practice match against the bot: never saved, no rewards, no desertion penalty
+  // Practice match against the bot: never saved, only a small XP reward, no desertion penalty
   training?: boolean;
   bot?: { id: string; brain: BotBrain; difficulty: BotDifficulty };
   simTime?: number;

@@ -30,6 +30,7 @@ import {
 import { EMOTES } from "../shared/emotes.js";
 import {
   recordMatchResult,
+  recordTrainingWin,
   saveGameRecord,
 } from "../services/match.service.js";
 import {
@@ -586,14 +587,27 @@ async function endMatch(
   try {
     const winner = room.players.get(winnerSocketId);
     if (winner && room.training) {
+      const human = players.find((p) => p.id !== room.bot?.id);
+      const data =
+        human && room.bot && winner.id === human.id
+          ? await recordTrainingWin(human.userId, room.bot.difficulty)
+          : null;
       io.to(roomId).emit("game:matchEnd", {
         winner: { id: winner.id, username: winner.username },
         scores: Object.fromEntries(room.scores),
         training: true,
         pointsEarned: 0,
-        rewardNotes: [],
+        rewardNotes: data?.rewardNotes ?? [],
         newPoints: null,
+        xpGained: data?.xpGained ?? null,
+        newXP: data?.xp ?? null,
+        newLevel: data?.level ?? null,
+        leveledUp: data?.leveledUp ?? false,
+        galacticsGained: data?.galacticsGained ?? 0,
+        newGalactics: data?.galactics ?? null,
       });
+      if (human && data?.leveledUp)
+        announceLevelChange(io, human.userId, human.username, human.level, data.level);
     } else if (winner) {
       const loser = players.find((p) => p.id !== winnerSocketId);
 

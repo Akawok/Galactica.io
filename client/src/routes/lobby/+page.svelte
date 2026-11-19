@@ -196,12 +196,30 @@
 	let messagesEl = $state<HTMLDivElement | null>(null);
 
 	// Keeps the newest message in view, unless the player scrolled up to read older ones
-	$effect.pre(() => {
-		void $chatMessages.length;
+	let chatStuckToBottom = true;
+
+	function onChatScroll() {
 		const el = messagesEl;
 		if (!el) return;
-		const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-		if (atBottom) queueMicrotask(() => (el.scrollTop = el.scrollHeight));
+		chatStuckToBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+	}
+
+	function pinChatToBottom() {
+		const el = messagesEl;
+		if (el && chatStuckToBottom) el.scrollTop = el.scrollHeight;
+	}
+
+	$effect(() => {
+		void $chatMessages.length;
+		pinChatToBottom();
+	});
+
+	// The panel settles its height after the first render, which would leave the view mid-history
+	$effect(() => {
+		if (!messagesEl) return;
+		const observer = new ResizeObserver(pinChatToBottom);
+		observer.observe(messagesEl);
+		return () => observer.disconnect();
 	});
 
 	// Free items are given to every player at sign-up, they never belong in the shop
@@ -779,7 +797,7 @@
 
 			<div class="chat-col chat-col-main">
 				<div class="chat-col-title"><MessageSquare size={14} /> Chat</div>
-				<div class="messages" bind:this={messagesEl}>
+				<div class="messages" bind:this={messagesEl} onscroll={onChatScroll}>
 					{#each $chatMessages as msg}
 						{#if msg.announcement}
 							<div class="message announcement">
@@ -1871,11 +1889,12 @@
 	}
 
 	.mega-ring-wrap {
+		--ring-size: min(10vw, 20vh);
 		position: absolute;
 		top: 0;
 		right: 0;
-		width: 10vw;
-		height: 20vh;
+		width: var(--ring-size);
+		height: var(--ring-size);
 		display: flex;
 		align-items: center;
 		justify-content: center;
@@ -1887,9 +1906,9 @@
 		top: 50%;
 		left: 50%;
 		transform: translate(-50%, -50%);
-		width: 110%;
+		width: auto;
 		height: 110%;
-		object-fit: cover;
+		max-width: none;
 		pointer-events: none;
 	}
 	.mega-ring-filled {
@@ -1897,9 +1916,9 @@
 		top: 50%;
 		left: 50%;
 		transform: translate(-50%, -50%);
-		width: 110%;
+		width: auto;
 		height: 110%;
-		object-fit: cover;
+		max-width: none;
 		pointer-events: none;
 		-webkit-mask-image: conic-gradient(
 			from 2.1deg,
@@ -1928,7 +1947,7 @@
 	}
 	.mega-level {
 		font-family: 'Quantico', sans-serif;
-		font-size: 3.5rem;
+		font-size: min(3.5rem, calc(var(--ring-size) * 0.38));
 		font-weight: 700;
 		line-height: 1;
 		letter-spacing: -1px;

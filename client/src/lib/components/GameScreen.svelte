@@ -22,7 +22,8 @@
 		| { kind: 'repeat'; matchNumber: number; percent: number }
 		| { kind: 'grey'; percent: number }
 		| { kind: 'upset'; bonusPercent: number }
-		| { kind: 'noFight'; self: boolean };
+		| { kind: 'noFight'; self: boolean }
+		| { kind: 'botCap' };
 
 	function noteText(note: RewardNote, won: boolean): string {
 		switch (note.kind) {
@@ -38,6 +39,8 @@
 					: `Ton adversaire a moins de niveaux que toi : gains à ${note.percent} %.`;
 			case 'upset':
 				return `+${note.bonusPercent} % d'XP : tu as battu plus fort que toi !`;
+			case 'botCap':
+				return "Limite d'XP contre les bots atteinte pour aujourd'hui, reviens demain ou affronte un joueur.";
 		}
 	}
 
@@ -398,7 +401,7 @@
 					{/if}
 
 					{#if matchResult.training}
-						<p class="reward-note">Entraînement : pas d'XP ni de crédits.</p>
+						<p class="reward-note">Entraînement : un peu d'XP si tu gagnes, pas de crédits.</p>
 					{/if}
 
 					{#each matchResult.rewardNotes as note, i (i)}

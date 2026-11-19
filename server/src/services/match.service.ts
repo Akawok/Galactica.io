@@ -2,12 +2,14 @@ import mongoose from "mongoose";
 import { User } from "../models/User.js";
 import { Game } from "../models/Game.js";
 import { GAME_CONFIG, applyXP } from "./game.service.js";
+import type { BotDifficulty } from "./bot.service.js";
 
 export type RewardNote =
   | { kind: "repeat"; matchNumber: number; percent: number }
   | { kind: "grey"; percent: number }
   | { kind: "upset"; bonusPercent: number }
-  | { kind: "noFight"; self: boolean };
+  | { kind: "noFight"; self: boolean }
+  | { kind: "botCap" };
 
 export interface MatchResult {
   points: number;
@@ -272,6 +274,52 @@ async function updateLoser(
     leveledUp: levelsGained > 0,
     galactics: updated.galactics ?? 0,
     galacticsGained,
+  };
+}
+
+export async function recordTrainingWin(
+  userId: string,
+  difficulty: BotDifficulty,
+): Promise<MatchResult | null> {
+  if (!mongoose.Types.ObjectId.isValid(userId)) return null;
+  const before = await User.findById(userId).select("xp level botXp");
+  if (!before) return null;
+
+  const today = startOfDay();
+  const day = before.botXp?.day;
+  const gainedToday = day && day >= today ? (before.botXp.gained ?? 0) : 0;
+  const base = GAME_CONFIG.BOT_XP_PER_WIN[difficulty];
+  const xpGained = Math.max(
+    0,
+    Math.min(base, GAME_CONFIG.BOT_XP_DAILY_CAP - gainedToday),
+  );
+  const { level, xp, levelsGained } = applyXP(before.level, before.xp, xpGained);
+  const galacticsGained = levelsGained * GAME_CONFIG.GALACTICS_PER_LEVEL;
+
+  const updated = await User.findByIdAndUpdate(
+    userId,
+    {
+      $inc: { galactics: galacticsGained },
+      $set: {
+        xp,
+        level,
+        botXp: { day: today, gained: gainedToday + xpGained },
+      },
+    },
+    { new: true },
+  ).select("points xp level galactics");
+  if (!updated) return null;
+
+  return {
+    points: updated.points,
+    pointsGained: 0,
+    xp: updated.xp,
+    level: updated.level,
+    xpGained,
+    leveledUp: levelsGained > 0,
+    galactics: updated.galactics ?? 0,
+    galacticsGained,
+    rewardNotes: xpGained < base ? [{ kind: "botCap" }] : [],
   };
 }
 
