@@ -5,6 +5,8 @@
 	import { getGrade } from '$lib/shared/grades';
 	import RefreshCw from '@lucide/svelte/icons/refresh-cw';
 	import Megaphone from '@lucide/svelte/icons/megaphone';
+	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
+	import { auth } from '$lib/stores/auth';
 
 	type Section = 'players' | 'games' | 'chat' | 'journal';
 
@@ -26,6 +28,11 @@
 	let announcing = $state(false);
 	let announceDone = $state<string | null>(null);
 	let announceError = $state<string | null>(null);
+
+	let resetConfirm = $state('');
+	let resetting = $state(false);
+	let resetDone = $state<string | null>(null);
+	let resetError = $state<string | null>(null);
 
 	let timer: ReturnType<typeof setInterval> | undefined;
 
@@ -63,6 +70,25 @@
 			announceError = err instanceof Error ? err.message : 'Envoi impossible';
 		} finally {
 			announcing = false;
+		}
+	}
+
+	async function resetAll(e: SubmitEvent) {
+		e.preventDefault();
+		if (resetConfirm !== 'RESET' || resetting) return;
+		resetting = true;
+		resetError = null;
+		resetDone = null;
+		try {
+			const out = await api.admin.resetAll(resetConfirm);
+			resetConfirm = '';
+			resetDone = `C'est fait : ${out.users} comptes remis à zéro, ${out.games} parties et ${out.messages} messages effacés.`;
+			auth.login((await api.auth.me()).user);
+			await load();
+		} catch (err) {
+			resetError = err instanceof Error ? err.message : 'Remise à zéro impossible';
+		} finally {
+			resetting = false;
 		}
 	}
 </script>
@@ -190,6 +216,24 @@
 				</form>
 			</section>
 
+			<section class="a-panel danger-zone">
+				<h2><TriangleAlert size={16} /> Tout remettre à zéro</h2>
+				<p class="a-muted">
+					Tous les comptes repartent au niveau 1, toi compris : crédits, Galactics, hangar,
+					caractéristiques et stats effacés. Toutes les parties, le chat et le journal sont vidés. Les
+					comptes, les rôles et la boutique sont gardés. Les joueurs connectés sont déconnectés. Tape
+					<strong>RESET</strong> pour confirmer.
+				</p>
+				<form onsubmit={resetAll} class="reset-form">
+					<input bind:value={resetConfirm} placeholder="RESET" aria-label="Confirmation" />
+					<button class="btn btn-danger btn-sm" disabled={resetting || resetConfirm !== 'RESET'}>
+						{resetting ? 'Remise à zéro…' : 'Tout remettre à zéro'}
+					</button>
+				</form>
+				{#if resetError}<p class="a-error" role="alert">{resetError}</p>{/if}
+				{#if resetDone}<p class="a-success">{resetDone}</p>{/if}
+			</section>
+
 			<section class="a-panel">
 				<h2>Dernières actions de l'équipe</h2>
 				{#if data.recentActions.length === 0}
@@ -299,6 +343,15 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.6rem;
+	}
+	.reset-form {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.6rem;
+		margin-top: 0.6rem;
+	}
+	.danger-zone {
+		border-color: rgba(255, 85, 102, 0.35);
 	}
 	.announce-foot {
 		display: flex;

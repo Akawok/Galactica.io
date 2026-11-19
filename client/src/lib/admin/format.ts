@@ -82,6 +82,7 @@ export const ACTION_LABEL: Record<string, string> = {
 	'send-reset': 'Lien de mot de passe envoyé',
 	'delete-account': 'Compte supprimé',
 	'reset-progress': 'Compte remis à zéro',
+	'reset-all': 'Jeu entier remis à zéro',
 	'game-close': 'Partie arrêtée',
 	'chat-delete': 'Message supprimé',
 	'chat-purge': 'Chat vidé',
@@ -127,6 +128,8 @@ export function describeAudit(entry: { action: string; details?: Record<string, 
 			const b = d.before ?? {};
 			return `était niveau ${b.level}, ${b.points} crédits, ${b.galactics} Galactics, ${b.items} items, ${b.games ?? 0} parties`;
 		}
+		case 'reset-all':
+			return `${d.users} comptes, ${d.games} parties et ${d.messages} messages effacés`;
 		case 'game-close':
 			return `#${d.roomId}${d.players?.length ? ` (${d.players.join(' vs ')})` : ''}`;
 		case 'chat-delete':

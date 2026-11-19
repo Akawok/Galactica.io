@@ -7,11 +7,13 @@ import { Game } from "../models/Game.js";
 import { Token } from "../models/Token.js";
 import { hasRole } from "../services/access.service.js";
 import {
+  disconnectAllUsers,
   disconnectUserSockets,
   getIO,
   socketCountForUser,
 } from "../sockets/registry.js";
 import {
+  closeAllRooms,
   closeRoomsOfUser,
   findOnlinePlayer,
   listOnlinePlayers,
@@ -37,6 +39,34 @@ function forceLogout(userId: string, reason: string) {
   const io = getIO();
   if (io) closeRoomsOfUser(io, userId, "Un joueur a été retiré par la modération");
   disconnectUserSockets(userId, reason);
+}
+
+async function freshProgress() {
+  const freeItems = await Item.find({
+    price: 0,
+    priceGalactics: { $in: [0, null] },
+  })
+    .select("_id")
+    .lean();
+  return {
+    level: 1,
+    xp: 0,
+    points: 0,
+    galactics: 0,
+    inventory: freeItems.map((i) => i._id),
+    ...DEFAULT_LOADOUT,
+    attributes: emptyAttributes(),
+    respecCount: 0,
+    stats: {
+      wins: 0,
+      losses: 0,
+      totalGames: 0,
+      currentStreak: 0,
+      bestStreak: 0,
+      desertions: 0,
+    },
+    botXp: { day: null, gained: 0 },
+  };
 }
 
 const objectIdParam = {
@@ -583,66 +613,26 @@ export async function adminRoutes(app: FastifyInstance) {
     },
     async (req, reply) => {
       const { userId } = req.params;
-      if (userId === req.account!.id) {
-        return reply
-          .code(400)
-          .send({ error: "Impossible de remettre son propre compte à zéro" });
-      }
       const user = await User.findById(userId)
         .select("username role level points galactics inventory")
         .lean();
       if (!user) return reply.code(404).send({ error: "Joueur non trouvé" });
-      if (user.role === "admin") {
-        return reply
-          .code(403)
-          .send({ error: "Retire d'abord le rôle admin de ce compte" });
-      }
       if (req.body.confirm !== user.username) {
         return reply
           .code(400)
           .send({ error: "Recopie exactement le pseudo pour confirmer" });
       }
 
-      const freeItems = await Item.find({
-        price: 0,
-        priceGalactics: { $in: [0, null] },
-      })
-        .select("_id")
-        .lean();
+      const fresh = await freshProgress();
+      if (userId === req.account!.id) {
+        const io = getIO();
+        if (io) closeRoomsOfUser(io, userId, "Un joueur a été retiré par la modération");
+      } else {
+        forceLogout(userId, "Ton compte a été remis à zéro, reconnecte-toi");
+      }
+      await User.updateOne({ _id: user._id }, { $set: fresh });
 
-      forceLogout(userId, "Ton compte a été remis à zéro, reconnecte-toi");
-      await User.updateOne(
-        { _id: user._id },
-        {
-          $set: {
-            level: 1,
-            xp: 0,
-            points: 0,
-            galactics: 0,
-            inventory: freeItems.map((i) => i._id),
-            ...DEFAULT_LOADOUT,
-            attributes: emptyAttributes(),
-            respecCount: 0,
-            stats: {
-              wins: 0,
-              losses: 0,
-              totalGames: 0,
-              currentStreak: 0,
-              bestStreak: 0,
-              desertions: 0,
-            },
-            botXp: { day: null, gained: 0 },
-          },
-        },
-      );
-
-      const detachedId = new mongoose.Types.ObjectId();
-      const games = await Game.updateMany(
-        { "players.userId": user._id },
-        { $set: { "players.$[me].userId": detachedId } },
-        { arrayFilters: [{ "me.userId": user._id }] },
-      );
-      await Game.updateMany({ winner: user._id }, { $set: { winner: detachedId } });
+      const games = await Game.deleteMany({ "players.userId": user._id });
 
       await audit(req, "reset-progress", user, {
         before: {
@@ -650,10 +640,52 @@ export async function adminRoutes(app: FastifyInstance) {
           points: user.points ?? 0,
           galactics: user.galactics ?? 0,
           items: user.inventory?.length ?? 0,
-          games: games.modifiedCount,
+          games: games.deletedCount,
         },
       });
       return reply.send({ ok: true });
+    },
+  );
+
+  app.post<{ Body: { confirm: string } }>(
+    "/admin/reset-all",
+    {
+      ...admin,
+      schema: {
+        body: {
+          type: "object",
+          required: ["confirm"],
+          additionalProperties: false,
+          properties: { confirm: { type: "string", maxLength: 20 } },
+        },
+      },
+    },
+    async (req, reply) => {
+      if (req.body.confirm !== "RESET") {
+        return reply.code(400).send({ error: "Tape RESET pour confirmer" });
+      }
+      const io = getIO();
+      if (io) closeAllRooms(io, "Le serveur a été remis à zéro");
+      disconnectAllUsers("Le jeu a été remis à zéro, reconnecte-toi", req.account!.id);
+
+      const fresh = await freshProgress();
+      const [users, games, messages] = await Promise.all([
+        User.updateMany({}, { $set: fresh }),
+        Game.deleteMany({}),
+        ChatMessage.deleteMany({}),
+        AuditLog.deleteMany({}),
+      ]);
+      io?.emit("chat:removed", { all: true });
+      await audit(req, "reset-all", null, {
+        users: users.modifiedCount,
+        games: games.deletedCount,
+        messages: messages.deletedCount,
+      });
+      return reply.send({
+        users: users.modifiedCount,
+        games: games.deletedCount,
+        messages: messages.deletedCount,
+      });
     },
   );
 

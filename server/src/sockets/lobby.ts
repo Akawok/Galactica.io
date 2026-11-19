@@ -996,6 +996,10 @@ export function closeRoomByAdmin(
   return "closed";
 }
 
+export function closeAllRooms(io: Server, reason: string) {
+  for (const room of Array.from(rooms.values())) closeRoomByAdmin(io, room.roomId, reason);
+}
+
 // A moderator action that disconnects a player must not count as a desertion
 export function closeRoomsOfUser(io: Server, userId: string, reason: string) {
   for (const room of Array.from(rooms.values())) {

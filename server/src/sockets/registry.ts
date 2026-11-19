@@ -49,3 +49,9 @@ export function disconnectUserSockets(
 export function getIO(): Server | null {
   return io;
 }
+
+export function disconnectAllUsers(reason: string, keepUserId?: string) {
+  for (const userId of Array.from(socketsByUser.keys())) {
+    if (userId !== keepUserId) disconnectUserSockets(userId, reason);
+  }
+}

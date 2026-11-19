@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api, type AdminUserDetail, type Role } from '$lib/api';
-	import { currentUser } from '$lib/stores/auth';
+	import { auth, currentUser } from '$lib/stores/auth';
 	import { BRANCHES } from '$lib/attributesUi';
 	import { getGrade } from '$lib/shared/grades';
 	import { MAX_LEVEL } from '$lib/shared/xp';
@@ -144,10 +144,14 @@
 	}
 
 	function resetProgress() {
-		run(async () => {
-			await api.admin.resetProgress(userId, resetConfirm);
-			resetConfirm = '';
-		}, 'Compte remis à zéro. Le joueur a été déconnecté.');
+		run(
+			async () => {
+				await api.admin.resetProgress(userId, resetConfirm);
+				resetConfirm = '';
+				if (isSelf) auth.login((await api.auth.me()).user);
+			},
+			isSelf ? 'Ton compte a été remis à zéro.' : 'Compte remis à zéro. Le joueur a été déconnecté.'
+		);
 	}
 
 	async function deleteAccount() {
@@ -472,13 +476,14 @@
 			{/if}
 		</div>
 
-		{#if isAdmin && !isSelf && user.role !== 'admin'}
+		{#if isAdmin}
 			<div class="block danger-zone">
 				<h3><RotateCcw size={14} /> Remettre le compte à zéro</h3>
 				<p class="a-muted">
 					Il repart comme un nouveau joueur : niveau 1, plus de crédits ni de Galactics, hangar vidé
-					sauf les items gratuits, caractéristiques, statistiques et historique de parties effacés. Il
-					garde son pseudo, son email et son mot de passe. Recopie <strong>{user.username}</strong> pour confirmer.
+					sauf les items gratuits, caractéristiques et statistiques effacées. Toutes ses parties sont
+					supprimées, y compris de l'historique de ses adversaires. Il garde son pseudo, son email et son
+					mot de passe. Recopie <strong>{user.username}</strong> pour confirmer.
 				</p>
 				<div class="inline">
 					<input bind:value={resetConfirm} placeholder={user.username} aria-label="Confirmation de la remise à zéro" />
@@ -489,7 +494,9 @@
 					>
 				</div>
 			</div>
+		{/if}
 
+		{#if isAdmin && !isSelf && user.role !== 'admin'}
 			<div class="block danger-zone">
 				<h3><TriangleAlert size={14} /> Supprimer le compte</h3>
 				<p class="a-muted">

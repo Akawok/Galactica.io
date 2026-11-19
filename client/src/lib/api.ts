@@ -138,6 +138,8 @@ export const api = {
 		resetAttributes: (userId: string) => post(`/admin/users/${userId}/reset-attributes`),
 		verifyEmail: (userId: string) => post(`/admin/users/${userId}/verify-email`),
 		sendReset: (userId: string) => post(`/admin/users/${userId}/send-reset`),
+		resetAll: (confirm: string) =>
+			post<{ users: number; games: number; messages: number }>('/admin/reset-all', { confirm }),
 		resetProgress: (userId: string, confirm: string) =>
 			post(`/admin/users/${userId}/reset-progress`, { confirm }),
 		deleteUser: (userId: string, confirm: string) =>

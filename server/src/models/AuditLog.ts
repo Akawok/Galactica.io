@@ -18,6 +18,7 @@ export type AuditAction =
   | "send-reset"
   | "delete-account"
   | "reset-progress"
+  | "reset-all"
   | "game-close"
   | "chat-delete"
   | "announce";
@@ -54,6 +55,7 @@ const AuditLogSchema = new Schema<IAuditLog>({
       "send-reset",
       "delete-account",
       "reset-progress",
+      "reset-all",
       "game-close",
       "chat-delete",
       "announce",
