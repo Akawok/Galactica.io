@@ -4,12 +4,12 @@ name: galactica
 
 services:
   mongo:
-    image: mongo:7.0
+    image: mongo:9.0
     ports: ["127.0.0.1:27017:27017"]
     volumes: [mongo-dev:/data/db]
 
   server:
-    image: node:22-slim
+    image: node:25-slim
     working_dir: /app
     command: sh -c "npm install && npm run build && npm run dev"
     env_file: .env
@@ -24,7 +24,7 @@ services:
     depends_on: [mongo]
 
   client:
-    image: node:22-slim
+    image: node:25-slim
     working_dir: /app
     command: sh -c "npm install && npm run dev -- --host"
     environment:
